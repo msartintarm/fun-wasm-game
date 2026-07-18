@@ -6,6 +6,11 @@ const FOOD_SCORE: u32 = 10;
 const BOOSTED_FOOD_SCORE: u32 = 25;
 const PROXIMITY_TICK_BONUS: u32 = 1;
 const STARTING_LENGTH: usize = 4;
+/// The player advances once every this-many ticks at baseline speed; AI
+/// snakes advance every tick. Being within PROXIMITY_RADIUS of another
+/// snake lets the player advance every tick too (i.e. "faster").
+const PLAYER_SLOW_FACTOR: u32 = 3;
+const MIN_FOOD: usize = 18;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Direction {
@@ -84,6 +89,7 @@ pub struct Game {
     score: u32,
     game_over: bool,
     rng_state: u64,
+    player_tick_counter: u32,
 }
 
 impl Game {
@@ -223,14 +229,10 @@ impl Game {
     fn player_index(&self) -> Option<usize> {
         self.snakes.iter().position(|s| s.is_player)
     }
-}
 
-#[wasm_bindgen]
-impl Game {
-    #[wasm_bindgen(constructor)]
-    pub fn new(width: u32, height: u32, num_ai: u32) -> Game {
-        let width = width as i32;
-        let height = height as i32;
+    /// Core constructor, independent of any JS/wasm host so it can be
+    /// exercised directly from native `cargo test`.
+    fn with_seed(width: i32, height: i32, num_ai: u32, seed: u64) -> Game {
         let mut game = Game {
             width,
             height,
@@ -238,7 +240,8 @@ impl Game {
             food: Vec::new(),
             score: 0,
             game_over: false,
-            rng_state: ((js_sys::Math::random() * (u64::MAX as f64)) as u64) | 1,
+            rng_state: seed | 1,
+            player_tick_counter: 0,
         };
 
         game.snakes.push(Game::spawn_snake(width, height, 0, true));
@@ -246,11 +249,20 @@ impl Game {
             game.snakes.push(Game::spawn_snake(width, height, i + 1, false));
         }
 
-        for _ in 0..(3 + num_ai) {
+        for _ in 0..MIN_FOOD {
             game.spawn_food();
         }
 
         game
+    }
+}
+
+#[wasm_bindgen]
+impl Game {
+    #[wasm_bindgen(constructor)]
+    pub fn new(width: u32, height: u32, num_ai: u32) -> Game {
+        let seed = ((js_sys::Math::random() * (u64::MAX as f64)) as u64) | 1;
+        Game::with_seed(width as i32, height as i32, num_ai, seed)
     }
 
     pub fn set_player_direction(&mut self, dir: u8) {
@@ -263,13 +275,19 @@ impl Game {
         }
     }
 
-    /// Advances the simulation by one step. When the player is within
-    /// PROXIMITY_RADIUS of another snake, the player takes an extra step
-    /// this tick (moves faster) and earns bonus score.
+    /// Advances the simulation by one tick. AI snakes move every tick; the
+    /// player only moves every PLAYER_SLOW_FACTOR ticks at baseline, unless
+    /// within PROXIMITY_RADIUS of another snake, in which case it moves
+    /// every tick (i.e. "faster") and earns bonus score.
     pub fn tick(&mut self) {
         if self.game_over {
             return;
         }
+
+        let player_index = self.player_index();
+        let boosted = player_index
+            .map(|i| self.snakes[i].alive && self.min_distance_to_others(i) <= PROXIMITY_RADIUS)
+            .unwrap_or(false);
 
         for i in 0..self.snakes.len() {
             if !self.snakes[i].is_player && self.snakes[i].alive {
@@ -278,15 +296,21 @@ impl Game {
             }
         }
 
-        self.step_all();
+        for i in 0..self.snakes.len() {
+            if !self.snakes[i].is_player {
+                self.step_one(i);
+            }
+        }
 
-        if let Some(player_index) = self.player_index() {
-            if self.snakes[player_index].alive {
-                let dist = self.min_distance_to_others(player_index);
-                if dist <= PROXIMITY_RADIUS {
+        if let Some(player_index) = player_index {
+            self.player_tick_counter += 1;
+            let should_step = boosted || self.player_tick_counter >= PLAYER_SLOW_FACTOR;
+            if should_step && self.snakes[player_index].alive {
+                self.player_tick_counter = 0;
+                if boosted {
                     self.score += PROXIMITY_TICK_BONUS;
-                    self.step_one(player_index);
                 }
+                self.step_one(player_index);
             }
         }
 
@@ -298,7 +322,7 @@ impl Game {
             self.game_over = true;
         }
 
-        while self.food.len() < 3 {
+        while self.food.len() < MIN_FOOD {
             self.spawn_food();
         }
     }
@@ -341,12 +365,6 @@ impl Game {
 }
 
 impl Game {
-    fn step_all(&mut self) {
-        for i in 0..self.snakes.len() {
-            self.step_one(i);
-        }
-    }
-
     fn step_one(&mut self, index: usize) {
         if !self.snakes[index].alive {
             return;
@@ -378,5 +396,124 @@ impl Game {
         } else {
             self.snakes[index].body.pop();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spawns_player_and_ai_with_correct_starting_length() {
+        let game = Game::with_seed(40, 30, 3, 1);
+        assert_eq!(game.snakes.len(), 4);
+        assert_eq!(game.snakes.iter().filter(|s| s.is_player).count(), 1);
+        for snake in &game.snakes {
+            assert_eq!(snake.body.len(), STARTING_LENGTH);
+            assert!(snake.alive);
+        }
+    }
+
+    #[test]
+    fn ignores_direct_reversal_but_accepts_turns() {
+        let mut game = Game::with_seed(40, 30, 0, 1);
+        let player = game.player_index().unwrap();
+        assert_eq!(game.snakes[player].direction, Direction::Right);
+
+        game.set_player_direction(2); // Left — opposite of Right, must be ignored
+        assert_eq!(game.snakes[player].direction, Direction::Right);
+
+        game.set_player_direction(0); // Up — a valid turn
+        assert_eq!(game.snakes[player].direction, Direction::Up);
+    }
+
+    #[test]
+    fn player_moves_once_every_player_slow_factor_ticks_at_baseline() {
+        // num_ai = 0 keeps the player's min distance to others at i32::MAX,
+        // so it never counts as boosted here.
+        let mut game = Game::with_seed(50, 50, 0, 1);
+        let player = game.player_index().unwrap();
+        let start_head = game.snakes[player].body[0];
+
+        for _ in 0..(PLAYER_SLOW_FACTOR - 1) {
+            game.tick();
+            assert_eq!(
+                game.snakes[player].body[0], start_head,
+                "player should not move before PLAYER_SLOW_FACTOR ticks elapse"
+            );
+        }
+
+        game.tick();
+        let (dx, dy) = Direction::Right.delta();
+        assert_eq!(
+            game.snakes[player].body[0],
+            (start_head.0 + dx, start_head.1 + dy)
+        );
+    }
+
+    #[test]
+    fn boosted_player_moves_every_tick() {
+        let mut game = Game::with_seed(50, 50, 1, 1);
+        let player = game.player_index().unwrap();
+        let ai = 1 - player; // the only other snake, index 0 or 1
+
+        // Place the AI snake's head right next to the player's, well within
+        // PROXIMITY_RADIUS, without touching (which would kill on step).
+        let player_head = game.snakes[player].body[0];
+        game.snakes[ai].body = vec![(player_head.0, player_head.1 + PROXIMITY_RADIUS)];
+        // Freeze the AI in place so it doesn't wander out of range chasing food.
+        game.food.clear();
+
+        let start_head = game.snakes[player].body[0];
+        game.tick();
+        let (dx, dy) = Direction::Right.delta();
+        assert_eq!(
+            game.snakes[player].body[0],
+            (start_head.0 + dx, start_head.1 + dy),
+            "boosted player should move on the very next tick"
+        );
+        assert!(game.score >= PROXIMITY_TICK_BONUS);
+    }
+
+    #[test]
+    fn dies_on_wall_collision_and_freezes_state() {
+        let mut game = Game::with_seed(6, 6, 0, 1);
+        let player = game.player_index().unwrap();
+        // Player starts at x = width/2 = 3 moving right; drive it into the
+        // east wall (x == 5) well within a generous tick budget.
+        for _ in 0..200 {
+            if game.game_over {
+                break;
+            }
+            game.tick();
+        }
+        assert!(game.game_over);
+        assert!(!game.snakes[player].alive);
+
+        let score_before = game.score;
+        let body_before = game.snakes[player].body.clone();
+        game.tick();
+        assert_eq!(game.score, score_before);
+        assert_eq!(game.snakes[player].body, body_before);
+    }
+
+    #[test]
+    fn eating_food_grows_snake_and_scores() {
+        let mut game = Game::with_seed(50, 50, 0, 1);
+        let player = game.player_index().unwrap();
+        let head = game.snakes[player].body[0];
+        let (dx, dy) = Direction::Right.delta();
+        let next = (head.0 + dx, head.1 + dy);
+
+        game.food = vec![next];
+        let len_before = game.snakes[player].body.len();
+
+        for _ in 0..PLAYER_SLOW_FACTOR {
+            game.tick();
+        }
+
+        assert_eq!(game.score, FOOD_SCORE);
+        assert_eq!(game.snakes[player].body.len(), len_before + 1);
+        assert!(!game.food.contains(&next));
     }
 }

@@ -2,11 +2,16 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-const GRID_WIDTH = 32;
-const GRID_HEIGHT = 24;
+const GRID_WIDTH = 100;
+const GRID_HEIGHT = 80;
+const VIEWPORT_CELLS_W = 32;
+const VIEWPORT_CELLS_H = 24;
 const CELL_SIZE = 20;
 const NUM_AI = 4;
-const TICK_MS = 110;
+const TICK_MS = 90;
+
+const CANVAS_W = VIEWPORT_CELLS_W * CELL_SIZE;
+const CANVAS_H = VIEWPORT_CELLS_H * CELL_SIZE;
 
 const AI_COLORS = ["#3b82f6", "#f97316", "#a855f7", "#06b6d4", "#e879f9"];
 
@@ -57,12 +62,73 @@ const KEY_TO_DIR: Record<string, number> = {
   D: 3,
 };
 
-function drawState(ctx: CanvasRenderingContext2D, state: GameStateJson) {
+function lerp(a: number, b: number, t: number) {
+  return a + (b - a) * t;
+}
+
+function clamp(v: number, lo: number, hi: number) {
+  return Math.min(Math.max(v, lo), hi);
+}
+
+/** Interpolated positions of a snake's segments between two ticks. Falls
+ * back to snapping to `curr` when the body length changed (growth/shrink),
+ * since segments don't correspond 1:1 across a length change. */
+function interpolatedBody(
+  prev: SnakeState | undefined,
+  curr: SnakeState,
+  t: number,
+): Point[] {
+  if (!prev || !prev.alive || prev.body.length !== curr.body.length) {
+    return curr.body;
+  }
+  return curr.body.map(([x, y], i) => {
+    const [px, py] = prev.body[i];
+    return [lerp(px, x, t), lerp(py, y, t)] as Point;
+  });
+}
+
+function render(
+  ctx: CanvasRenderingContext2D,
+  prevState: GameStateJson,
+  currState: GameStateJson,
+  t: number,
+) {
+  const currPlayer = currState.snakes.find((s) => s.is_player);
+  const prevPlayer = prevState.snakes.find((s) => s.is_player);
+
+  let camX = currState.width / 2;
+  let camY = currState.height / 2;
+  if (currPlayer?.alive) {
+    const [cx, cy] = currPlayer.body[0];
+    if (prevPlayer?.alive && prevPlayer.body.length === currPlayer.body.length) {
+      const [px, py] = prevPlayer.body[0];
+      camX = lerp(px, cx, t);
+      camY = lerp(py, cy, t);
+    } else {
+      camX = cx;
+      camY = cy;
+    }
+  }
+  camX = clamp(camX, VIEWPORT_CELLS_W / 2, currState.width - VIEWPORT_CELLS_W / 2);
+  camY = clamp(camY, VIEWPORT_CELLS_H / 2, currState.height - VIEWPORT_CELLS_H / 2);
+
+  const offsetX = CANVAS_W / 2 - camX * CELL_SIZE;
+  const offsetY = CANVAS_H / 2 - camY * CELL_SIZE;
+
+  ctx.fillStyle = "#020617";
+  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+
+  ctx.save();
+  ctx.translate(offsetX, offsetY);
+
   ctx.fillStyle = "#0f172a";
-  ctx.fillRect(0, 0, state.width * CELL_SIZE, state.height * CELL_SIZE);
+  ctx.fillRect(0, 0, currState.width * CELL_SIZE, currState.height * CELL_SIZE);
+  ctx.strokeStyle = "#1e293b";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(0, 0, currState.width * CELL_SIZE, currState.height * CELL_SIZE);
 
   ctx.fillStyle = "#ef4444";
-  for (const [x, y] of state.food) {
+  for (const [x, y] of currState.food) {
     ctx.beginPath();
     ctx.arc(
       x * CELL_SIZE + CELL_SIZE / 2,
@@ -75,8 +141,8 @@ function drawState(ctx: CanvasRenderingContext2D, state: GameStateJson) {
   }
 
   let aiIndex = 0;
-  for (const snake of state.snakes) {
-    if (!snake.alive) continue;
+  currState.snakes.forEach((snake, i) => {
+    if (!snake.alive) return;
 
     let color: string;
     if (snake.is_player) {
@@ -86,9 +152,10 @@ function drawState(ctx: CanvasRenderingContext2D, state: GameStateJson) {
       aiIndex += 1;
     }
 
+    const body = interpolatedBody(prevState.snakes[i], snake, t);
     ctx.fillStyle = color;
-    snake.body.forEach(([x, y], i) => {
-      const pad = i === 0 ? 1 : 2;
+    body.forEach(([x, y], j) => {
+      const pad = j === 0 ? 1 : 2;
       ctx.fillRect(
         x * CELL_SIZE + pad,
         y * CELL_SIZE + pad,
@@ -98,23 +165,25 @@ function drawState(ctx: CanvasRenderingContext2D, state: GameStateJson) {
     });
 
     if (snake.is_player && snake.boosted) {
-      const [hx, hy] = snake.body[0];
+      const [hx, hy] = body[0];
       ctx.strokeStyle = "#facc15";
       ctx.lineWidth = 2;
-      ctx.strokeRect(
-        hx * CELL_SIZE - 1,
-        hy * CELL_SIZE - 1,
-        CELL_SIZE + 2,
-        CELL_SIZE + 2,
-      );
+      ctx.strokeRect(hx * CELL_SIZE - 1, hy * CELL_SIZE - 1, CELL_SIZE + 2, CELL_SIZE + 2);
     }
-  }
+  });
+
+  ctx.restore();
 }
 
 export default function GameCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const gameRef = useRef<GameInstance | null>(null);
   const moduleRef = useRef<EngineModule | null>(null);
+  const simRef = useRef<{
+    prev: GameStateJson;
+    curr: GameStateJson;
+    tickTime: number;
+  } | null>(null);
   const [score, setScore] = useState(0);
   const [gameOver, setGameOver] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -124,7 +193,10 @@ export default function GameCanvas() {
     const mod = moduleRef.current;
     if (!mod) return;
     gameRef.current?.free();
-    gameRef.current = new mod.Game(GRID_WIDTH, GRID_HEIGHT, NUM_AI);
+    const game = new mod.Game(GRID_WIDTH, GRID_HEIGHT, NUM_AI);
+    gameRef.current = game;
+    const initial = game.state();
+    simRef.current = { prev: initial, curr: initial, tickTime: performance.now() };
     setScore(0);
     setGameOver(false);
     setBoosted(false);
@@ -133,6 +205,7 @@ export default function GameCanvas() {
   useEffect(() => {
     let cancelled = false;
     let interval: ReturnType<typeof setInterval> | undefined;
+    let raf = 0;
 
     async function load() {
       // Loaded from /public at runtime — kept out of the Next.js bundler
@@ -143,26 +216,40 @@ export default function GameCanvas() {
       await mod.default();
       if (cancelled) return;
       moduleRef.current = mod;
-      gameRef.current = new mod.Game(GRID_WIDTH, GRID_HEIGHT, NUM_AI);
+      const game = new mod.Game(GRID_WIDTH, GRID_HEIGHT, NUM_AI);
+      gameRef.current = game;
+      const initial = game.state();
+      simRef.current = { prev: initial, curr: initial, tickTime: performance.now() };
       setLoading(false);
-
-      const canvas = canvasRef.current;
-      const ctx = canvas?.getContext("2d");
 
       interval = setInterval(() => {
         const game = gameRef.current;
-        if (!game || !ctx) return;
+        if (!game) return;
         if (!game.is_game_over()) {
           game.tick();
         }
-        const state = game.state();
-        drawState(ctx, state);
+        const nextState = game.state();
+        const sim = simRef.current;
+        simRef.current = {
+          prev: sim ? sim.curr : nextState,
+          curr: nextState,
+          tickTime: performance.now(),
+        };
         setScore(game.score());
         setGameOver(game.is_game_over());
-        setBoosted(
-          state.snakes.find((s) => s.is_player)?.boosted ?? false,
-        );
+        setBoosted(nextState.snakes.find((s) => s.is_player)?.boosted ?? false);
       }, TICK_MS);
+
+      function frame() {
+        const ctx = canvasRef.current?.getContext("2d");
+        const sim = simRef.current;
+        if (ctx && sim) {
+          const t = clamp((performance.now() - sim.tickTime) / TICK_MS, 0, 1);
+          render(ctx, sim.prev, sim.curr, t);
+        }
+        raf = requestAnimationFrame(frame);
+      }
+      raf = requestAnimationFrame(frame);
     }
 
     load();
@@ -170,6 +257,7 @@ export default function GameCanvas() {
     return () => {
       cancelled = true;
       if (interval) clearInterval(interval);
+      if (raf) cancelAnimationFrame(raf);
       gameRef.current?.free();
       gameRef.current = null;
     };
@@ -201,8 +289,8 @@ export default function GameCanvas() {
       <div className="relative">
         <canvas
           ref={canvasRef}
-          width={GRID_WIDTH * CELL_SIZE}
-          height={GRID_HEIGHT * CELL_SIZE}
+          width={CANVAS_W}
+          height={CANVAS_H}
           className="rounded-lg border border-zinc-700"
         />
         {loading && (
