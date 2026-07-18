@@ -1,19 +1,34 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import ConfigPanel from "./ConfigPanel";
+import { TICK_MS_DEFAULT, type FullConfig } from "@/lib/gameConfig";
 
-const GRID_WIDTH = 100;
-const GRID_HEIGHT = 80;
 const VIEWPORT_CELLS_W = 32;
 const VIEWPORT_CELLS_H = 24;
 const CELL_SIZE = 20;
-const NUM_AI = 4;
-const TICK_MS = 90;
 
 const CANVAS_W = VIEWPORT_CELLS_W * CELL_SIZE;
 const CANVAS_H = VIEWPORT_CELLS_H * CELL_SIZE;
 
 const AI_COLORS = ["#3b82f6", "#f97316", "#a855f7", "#06b6d4", "#e879f9"];
+
+// Fallback used only if the wasm module's default_config() can't be reached
+// before the settings panel needs something to render; overwritten by the
+// engine's real defaults as soon as the module loads.
+const FALLBACK_CONFIG: FullConfig = {
+  width: 100,
+  height: 80,
+  numAi: 4,
+  playerSpeed: 0.85,
+  boostMultiplier: 1.6,
+  proximityRadius: 3,
+  foodBoostTicks: 20,
+  foodScore: 10,
+  boostedFoodScore: 25,
+  minFood: 18,
+  tickMs: TICK_MS_DEFAULT,
+};
 
 type Point = [number, number];
 
@@ -44,8 +59,12 @@ interface GameInstance {
 
 interface EngineModule {
   default: (input?: unknown) => Promise<unknown>;
-  Game: new (width: number, height: number, numAi: number) => GameInstance;
+  Game: new (config: unknown) => GameInstance;
+  default_config: () => Partial<EngineConfigJson>;
 }
+
+// The engine's Config struct, camelCase via serde(rename_all).
+type EngineConfigJson = Omit<FullConfig, "tickMs">;
 
 const KEY_TO_DIR: Record<string, number> = {
   ArrowUp: 0,
@@ -87,6 +106,16 @@ function interpolatedBody(
   });
 }
 
+// Checkerboard shades — close in value so the pattern reads as texture
+// rather than a loud grid, plus a distinct warm tone for the outermost
+// ring of cells so the playing field's edge is unmistakable at a glance.
+function cellColor(x: number, y: number, width: number, height: number): string {
+  const isEdge = x === 0 || y === 0 || x === width - 1 || y === height - 1;
+  const parity = (x + y) % 2 === 0;
+  if (isEdge) return parity ? "#3f2a14" : "#33220f";
+  return parity ? "#0d1424" : "#111c33";
+}
+
 function render(
   ctx: CanvasRenderingContext2D,
   prevState: GameStateJson,
@@ -121,11 +150,22 @@ function render(
   ctx.save();
   ctx.translate(offsetX, offsetY);
 
-  ctx.fillStyle = "#0f172a";
-  ctx.fillRect(0, 0, currState.width * CELL_SIZE, currState.height * CELL_SIZE);
-  ctx.strokeStyle = "#1e293b";
-  ctx.lineWidth = 2;
-  ctx.strokeRect(0, 0, currState.width * CELL_SIZE, currState.height * CELL_SIZE);
+  // Only paint the checkerboard cells actually inside the viewport — the
+  // world can be far larger than what's on screen at once.
+  const minX = Math.max(0, Math.floor(camX - VIEWPORT_CELLS_W / 2) - 1);
+  const maxX = Math.min(currState.width - 1, Math.ceil(camX + VIEWPORT_CELLS_W / 2) + 1);
+  const minY = Math.max(0, Math.floor(camY - VIEWPORT_CELLS_H / 2) - 1);
+  const maxY = Math.min(currState.height - 1, Math.ceil(camY + VIEWPORT_CELLS_H / 2) + 1);
+  for (let y = minY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      ctx.fillStyle = cellColor(x, y, currState.width, currState.height);
+      ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+    }
+  }
+
+  ctx.strokeStyle = "#f59e0b";
+  ctx.lineWidth = 3;
+  ctx.strokeRect(1, 1, currState.width * CELL_SIZE - 2, currState.height * CELL_SIZE - 2);
 
   ctx.fillStyle = "#ef4444";
   for (const [x, y] of currState.food) {
@@ -164,9 +204,9 @@ function render(
       );
     });
 
-    if (snake.is_player && snake.boosted) {
+    if (snake.boosted) {
       const [hx, hy] = body[0];
-      ctx.strokeStyle = "#facc15";
+      ctx.strokeStyle = snake.is_player ? "#facc15" : color;
       ctx.lineWidth = 2;
       ctx.strokeRect(hx * CELL_SIZE - 1, hy * CELL_SIZE - 1, CELL_SIZE + 2, CELL_SIZE + 2);
     }
@@ -179,33 +219,70 @@ export default function GameCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const gameRef = useRef<GameInstance | null>(null);
   const moduleRef = useRef<EngineModule | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const rafRef = useRef<number>(0);
   const simRef = useRef<{
     prev: GameStateJson;
     curr: GameStateJson;
     tickTime: number;
   } | null>(null);
+
   const [score, setScore] = useState(0);
   const [gameOver, setGameOver] = useState(false);
   const [loading, setLoading] = useState(true);
   const [boosted, setBoosted] = useState(false);
+  const [config, setConfig] = useState<FullConfig>(FALLBACK_CONFIG);
+  const [defaults, setDefaults] = useState<FullConfig>(FALLBACK_CONFIG);
 
-  const startGame = useCallback(() => {
+  const startGame = useCallback((cfg: FullConfig) => {
     const mod = moduleRef.current;
     if (!mod) return;
+
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
     gameRef.current?.free();
-    const game = new mod.Game(GRID_WIDTH, GRID_HEIGHT, NUM_AI);
+
+    const game = new mod.Game(cfg);
     gameRef.current = game;
     const initial = game.state();
     simRef.current = { prev: initial, curr: initial, tickTime: performance.now() };
+    setConfig(cfg);
     setScore(0);
     setGameOver(false);
     setBoosted(false);
+
+    intervalRef.current = setInterval(() => {
+      const g = gameRef.current;
+      if (!g) return;
+      if (!g.is_game_over()) {
+        g.tick();
+      }
+      const nextState = g.state();
+      const sim = simRef.current;
+      simRef.current = {
+        prev: sim ? sim.curr : nextState,
+        curr: nextState,
+        tickTime: performance.now(),
+      };
+      setScore(g.score());
+      setGameOver(g.is_game_over());
+      setBoosted(nextState.snakes.find((s) => s.is_player)?.boosted ?? false);
+    }, cfg.tickMs);
+
+    function frame() {
+      const ctx = canvasRef.current?.getContext("2d");
+      const sim = simRef.current;
+      if (ctx && sim) {
+        const elapsedT = clamp((performance.now() - sim.tickTime) / cfg.tickMs, 0, 1);
+        render(ctx, sim.prev, sim.curr, elapsedT);
+      }
+      rafRef.current = requestAnimationFrame(frame);
+    }
+    rafRef.current = requestAnimationFrame(frame);
   }, []);
 
   useEffect(() => {
     let cancelled = false;
-    let interval: ReturnType<typeof setInterval> | undefined;
-    let raf = 0;
 
     async function load() {
       // Loaded from /public at runtime — kept out of the Next.js bundler
@@ -216,51 +293,24 @@ export default function GameCanvas() {
       await mod.default();
       if (cancelled) return;
       moduleRef.current = mod;
-      const game = new mod.Game(GRID_WIDTH, GRID_HEIGHT, NUM_AI);
-      gameRef.current = game;
-      const initial = game.state();
-      simRef.current = { prev: initial, curr: initial, tickTime: performance.now() };
+
+      const engineDefaults = mod.default_config() as EngineConfigJson;
+      const fullDefaults: FullConfig = { ...engineDefaults, tickMs: TICK_MS_DEFAULT };
+      setDefaults(fullDefaults);
       setLoading(false);
-
-      interval = setInterval(() => {
-        const game = gameRef.current;
-        if (!game) return;
-        if (!game.is_game_over()) {
-          game.tick();
-        }
-        const nextState = game.state();
-        const sim = simRef.current;
-        simRef.current = {
-          prev: sim ? sim.curr : nextState,
-          curr: nextState,
-          tickTime: performance.now(),
-        };
-        setScore(game.score());
-        setGameOver(game.is_game_over());
-        setBoosted(nextState.snakes.find((s) => s.is_player)?.boosted ?? false);
-      }, TICK_MS);
-
-      function frame() {
-        const ctx = canvasRef.current?.getContext("2d");
-        const sim = simRef.current;
-        if (ctx && sim) {
-          const t = clamp((performance.now() - sim.tickTime) / TICK_MS, 0, 1);
-          render(ctx, sim.prev, sim.curr, t);
-        }
-        raf = requestAnimationFrame(frame);
-      }
-      raf = requestAnimationFrame(frame);
+      startGame(fullDefaults);
     }
 
     load();
 
     return () => {
       cancelled = true;
-      if (interval) clearInterval(interval);
-      if (raf) cancelAnimationFrame(raf);
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
       gameRef.current?.free();
       gameRef.current = null;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -269,14 +319,14 @@ export default function GameCanvas() {
       if (dir === undefined) return;
       e.preventDefault();
       if (gameOver) {
-        if (e.key === "r" || e.key === "R") startGame();
+        if (e.key === "r" || e.key === "R") startGame(config);
         return;
       }
       gameRef.current?.set_player_direction(dir);
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [gameOver, startGame]);
+  }, [gameOver, startGame, config]);
 
   return (
     <div className="flex flex-col items-center gap-4">
@@ -303,7 +353,7 @@ export default function GameCanvas() {
             <p className="text-2xl font-semibold">Game Over</p>
             <p>Final score: {score}</p>
             <button
-              onClick={startGame}
+              onClick={() => startGame(config)}
               className="mt-2 rounded-full bg-zinc-50 px-5 py-2 text-sm font-medium text-black hover:bg-zinc-200"
             >
               Restart (R)
@@ -312,9 +362,10 @@ export default function GameCanvas() {
         )}
       </div>
       <p className="max-w-md text-center text-sm text-zinc-400">
-        Arrow keys or WASD to move. Get close to another snake to speed up
-        and score more points — but don&apos;t crash into them.
+        Arrow keys or WASD to move. Get close to another snake — or eat food
+        — to speed up and score more points. But don&apos;t crash.
       </p>
+      <ConfigPanel config={config} defaults={defaults} onApply={startGame} />
     </div>
   );
 }
