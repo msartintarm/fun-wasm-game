@@ -86,15 +86,6 @@ impl Direction {
         }
     }
 
-    fn to_u8(self) -> u8 {
-        match self {
-            Direction::Up => 0,
-            Direction::Down => 1,
-            Direction::Left => 2,
-            Direction::Right => 3,
-        }
-    }
-
     fn opposite(self) -> Direction {
         match self {
             Direction::Up => Direction::Down,
@@ -129,18 +120,6 @@ struct SnakeState {
     /// separate so the frontend can react differently to "close to another
     /// snake" vs. "sped up from eating."
     near_others: bool,
-    /// Current heading, 0=Up/1=Down/2=Left/3=Right — the direction the
-    /// snake is actually moving in right now (only changes at the instant
-    /// a step commits), not necessarily whatever's next in the player's
-    /// input buffer.
-    direction: u8,
-    /// Fractional progress (0.0..1.0, occasionally higher for a boosted
-    /// multi-step tick) toward the next cell, left over after this tick's
-    /// movement. Combined with `direction`, this lets the frontend render
-    /// continuous motion between ticks instead of interpolating over an
-    /// assumed fixed duration that doesn't match the engine's actual
-    /// (non-uniform) step timing.
-    move_progress: f64,
 }
 
 const MAX_QUEUED_DIRECTIONS: usize = 3;
@@ -523,8 +502,6 @@ impl Game {
                 is_player: s.is_player,
                 boosted: s.alive && (self.is_near_others(i) || s.food_boost_remaining > 0),
                 near_others: s.alive && self.is_near_others(i),
-                direction: s.direction.to_u8(),
-                move_progress: s.move_progress,
             })
             .collect();
 

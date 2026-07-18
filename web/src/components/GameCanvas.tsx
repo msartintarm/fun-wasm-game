@@ -46,8 +46,6 @@ interface SnakeState {
   is_player: boolean;
   boosted: boolean;
   near_others: boolean;
-  direction: number;
-  move_progress: number;
 }
 
 function headEmoji(snake: SnakeState, ateRecently: boolean): string {
@@ -103,34 +101,25 @@ function clamp(v: number, lo: number, hi: number) {
   return Math.min(Math.max(v, lo), hi);
 }
 
-const DIR_DELTA: Record<number, Point> = {
-  0: [0, -1], // Up
-  1: [0, 1], // Down
-  2: [-1, 0], // Left
-  3: [1, 0], // Right
-};
-
-function snakeSpeed(snake: SnakeState, config: FullConfig): number {
-  const base = snake.is_player ? config.playerSpeed : 1;
-  const boosted = snake.boosted ? base * config.boostMultiplier : base;
-  return snake.is_player ? Math.min(boosted, 1) : boosted;
+function lerp(a: number, b: number, t: number) {
+  return a + (b - a) * t;
 }
 
-// Predicts the body one step ahead (new head = head + direction, each
-// other segment inherits the one ahead of it) so segments can lerp toward
-// it — a rigid shift of the whole body breaks at turns.
-function predictedNextBody(body: Point[], direction: number): Point[] {
-  const [dx, dy] = DIR_DELTA[direction] ?? [0, 0];
-  const [hx, hy] = body[0];
-  const newHead: Point = [hx + dx, hy + dy];
-  return [newHead, ...body.slice(0, -1)];
-}
-
-function continuousBody(snake: SnakeState, t: number): Point[] {
-  const predicted = predictedNextBody(snake.body, snake.direction);
+// Interpolates each segment from its previous-tick position to its
+// current-tick position, over the real fixed tick interval. This only ever
+// blends between two states the engine actually reported, so it can't
+// guess wrong at a turn the way projecting forward from "current
+// direction" can (a queued turn doesn't take effect until the tick it
+// commits, so extrapolating past that point points the wrong way and then
+// has to jump-correct). Falls back to snapping when there's no matching
+// previous body (just spawned, or grew/shrank this tick).
+function interpolatedBody(prevSnake: SnakeState | undefined, snake: SnakeState, t: number): Point[] {
+  if (!prevSnake || !prevSnake.alive || prevSnake.body.length !== snake.body.length) {
+    return snake.body;
+  }
   return snake.body.map(([x, y], j) => {
-    const [nx, ny] = predicted[j];
-    return [x + (nx - x) * t, y + (ny - y) * t] as Point;
+    const [px, py] = prevSnake.body[j];
+    return [lerp(px, x, t), lerp(py, y, t)] as Point;
   });
 }
 
@@ -163,6 +152,7 @@ function drawHeadEmoji(
 
 function render(
   ctx: CanvasRenderingContext2D,
+  prevState: GameStateJson,
   currState: GameStateJson,
   deaths: (DeathInfo | null)[],
   ateTimestamps: (number | null)[],
@@ -170,10 +160,7 @@ function render(
   lastTickTime: number,
   now: number,
 ) {
-  const elapsedFrac = clamp((now - lastTickTime) / config.tickMs, 0, 1);
-  // Clamped to 1: predictedNextBody only models one step ahead.
-  const progressFor = (snake: SnakeState) =>
-    clamp(snake.move_progress + snakeSpeed(snake, config) * elapsedFrac, 0, 1);
+  const t = clamp((now - lastTickTime) / config.tickMs, 0, 1);
 
   const playerIndex = currState.snakes.findIndex((s) => s.is_player);
   const currPlayer = playerIndex >= 0 ? currState.snakes[playerIndex] : undefined;
@@ -184,7 +171,7 @@ function render(
     // currPlayer.body is frozen at the death cell once dead — use it
     // directly so the camera holds still there instead of snapping to center.
     const body = currPlayer.alive
-      ? continuousBody(currPlayer, progressFor(currPlayer))
+      ? interpolatedBody(prevState.snakes[playerIndex], currPlayer, t)
       : currPlayer.body;
     [camX, camY] = body[0];
   }
@@ -262,7 +249,7 @@ function render(
       aiIndex += 1;
     }
 
-    const body = continuousBody(snake, progressFor(snake));
+    const body = interpolatedBody(prevState.snakes[i], snake, t);
     ctx.fillStyle = color;
     body.forEach(([x, y], j) => {
       const pad = j === 0 ? 1 : 2;
@@ -295,7 +282,8 @@ export default function GameCanvas() {
   const moduleRef = useRef<EngineModule | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const rafRef = useRef<number>(0);
-  const latestStateRef = useRef<GameStateJson | null>(null);
+  const prevStateRef = useRef<GameStateJson | null>(null);
+  const currStateRef = useRef<GameStateJson | null>(null);
   const lastTickTimeRef = useRef<number>(0);
   const deathsRef = useRef<(DeathInfo | null)[]>([]);
   const ateRef = useRef<(number | null)[]>([]);
@@ -321,7 +309,8 @@ export default function GameCanvas() {
     const game = new mod.Game(cfg);
     gameRef.current = game;
     const initial = game.state();
-    latestStateRef.current = initial;
+    prevStateRef.current = initial;
+    currStateRef.current = initial;
     lastTickTimeRef.current = performance.now();
     deathsRef.current = initial.snakes.map(() => null);
     ateRef.current = initial.snakes.map(() => null);
@@ -338,7 +327,7 @@ export default function GameCanvas() {
       }
       const nextState = g.state();
       const now = performance.now();
-      const prevState = latestStateRef.current;
+      const prevState = currStateRef.current;
       const deaths = deathsRef.current;
       const ateAt = ateRef.current;
       nextState.snakes.forEach((s, i) => {
@@ -351,7 +340,8 @@ export default function GameCanvas() {
           ateAt[i] = now;
         }
       });
-      latestStateRef.current = nextState;
+      prevStateRef.current = prevState;
+      currStateRef.current = nextState;
       lastTickTimeRef.current = now;
       setScore(g.score());
       setBoosted(nextState.snakes.find((s) => s.is_player)?.boosted ?? false);
@@ -365,11 +355,13 @@ export default function GameCanvas() {
 
     function frame() {
       const ctx = canvasRef.current?.getContext("2d");
-      const latest = latestStateRef.current;
-      if (ctx && latest) {
+      const prev = prevStateRef.current;
+      const curr = currStateRef.current;
+      if (ctx && prev && curr) {
         render(
           ctx,
-          latest,
+          prev,
+          curr,
           deathsRef.current,
           ateRef.current,
           cfg,
