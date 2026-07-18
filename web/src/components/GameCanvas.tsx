@@ -12,10 +12,18 @@ const CANVAS_W = VIEWPORT_CELLS_W * CELL_SIZE;
 const CANVAS_H = VIEWPORT_CELLS_H * CELL_SIZE;
 
 const AI_COLORS = ["#3b82f6", "#f97316", "#a855f7", "#06b6d4", "#e879f9"];
+const DEATH_FADE_MS = 1000;
+const DEATH_COLOR = "#7f1d1d";
+const EAT_FLASH_MS = 500;
 
-// Fallback used only if the wasm module's default_config() can't be reached
-// before the settings panel needs something to render; overwritten by the
-// engine's real defaults as soon as the module loads.
+// Priority: dead > just ate > near another snake > boosted > idle.
+const EMOJI_DEAD = "💀";
+const EMOJI_EATING = "😋";
+const EMOJI_NEAR = "😬";
+const EMOJI_BOOSTED = "😎";
+const EMOJI_IDLE = "🙂";
+
+// Placeholder until default_config() loads from the wasm module.
 const FALLBACK_CONFIG: FullConfig = {
   width: 100,
   height: 80,
@@ -37,6 +45,16 @@ interface SnakeState {
   alive: boolean;
   is_player: boolean;
   boosted: boolean;
+  near_others: boolean;
+  direction: number;
+  move_progress: number;
+}
+
+function headEmoji(snake: SnakeState, ateRecently: boolean): string {
+  if (ateRecently) return EMOJI_EATING;
+  if (snake.near_others) return EMOJI_NEAR;
+  if (snake.boosted) return EMOJI_BOOSTED;
+  return EMOJI_IDLE;
 }
 
 interface GameStateJson {
@@ -81,29 +99,44 @@ const KEY_TO_DIR: Record<string, number> = {
   D: 3,
 };
 
-function lerp(a: number, b: number, t: number) {
-  return a + (b - a) * t;
-}
-
 function clamp(v: number, lo: number, hi: number) {
   return Math.min(Math.max(v, lo), hi);
 }
 
-/** Interpolated positions of a snake's segments between two ticks. Falls
- * back to snapping to `curr` when the body length changed (growth/shrink),
- * since segments don't correspond 1:1 across a length change. */
-function interpolatedBody(
-  prev: SnakeState | undefined,
-  curr: SnakeState,
-  t: number,
-): Point[] {
-  if (!prev || !prev.alive || prev.body.length !== curr.body.length) {
-    return curr.body;
-  }
-  return curr.body.map(([x, y], i) => {
-    const [px, py] = prev.body[i];
-    return [lerp(px, x, t), lerp(py, y, t)] as Point;
+const DIR_DELTA: Record<number, Point> = {
+  0: [0, -1], // Up
+  1: [0, 1], // Down
+  2: [-1, 0], // Left
+  3: [1, 0], // Right
+};
+
+function snakeSpeed(snake: SnakeState, config: FullConfig): number {
+  const base = snake.is_player ? config.playerSpeed : 1;
+  const boosted = snake.boosted ? base * config.boostMultiplier : base;
+  return snake.is_player ? Math.min(boosted, 1) : boosted;
+}
+
+// Predicts the body one step ahead (new head = head + direction, each
+// other segment inherits the one ahead of it) so segments can lerp toward
+// it — a rigid shift of the whole body breaks at turns.
+function predictedNextBody(body: Point[], direction: number): Point[] {
+  const [dx, dy] = DIR_DELTA[direction] ?? [0, 0];
+  const [hx, hy] = body[0];
+  const newHead: Point = [hx + dx, hy + dy];
+  return [newHead, ...body.slice(0, -1)];
+}
+
+function continuousBody(snake: SnakeState, t: number): Point[] {
+  const predicted = predictedNextBody(snake.body, snake.direction);
+  return snake.body.map(([x, y], j) => {
+    const [nx, ny] = predicted[j];
+    return [x + (nx - x) * t, y + (ny - y) * t] as Point;
   });
+}
+
+interface DeathInfo {
+  body: Point[];
+  diedAt: number;
 }
 
 // Checkerboard shades — close in value so the pattern reads as texture
@@ -116,27 +149,44 @@ function cellColor(x: number, y: number, width: number, height: number): string 
   return parity ? "#0d1424" : "#111c33";
 }
 
+function drawHeadEmoji(
+  ctx: CanvasRenderingContext2D,
+  emoji: string,
+  x: number,
+  y: number,
+) {
+  ctx.font = `${CELL_SIZE * 0.95}px sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(emoji, x * CELL_SIZE + CELL_SIZE / 2, y * CELL_SIZE + CELL_SIZE / 2 + 1);
+}
+
 function render(
   ctx: CanvasRenderingContext2D,
-  prevState: GameStateJson,
   currState: GameStateJson,
-  t: number,
+  deaths: (DeathInfo | null)[],
+  ateTimestamps: (number | null)[],
+  config: FullConfig,
+  lastTickTime: number,
+  now: number,
 ) {
-  const currPlayer = currState.snakes.find((s) => s.is_player);
-  const prevPlayer = prevState.snakes.find((s) => s.is_player);
+  const elapsedFrac = clamp((now - lastTickTime) / config.tickMs, 0, 1);
+  // Clamped to 1: predictedNextBody only models one step ahead.
+  const progressFor = (snake: SnakeState) =>
+    clamp(snake.move_progress + snakeSpeed(snake, config) * elapsedFrac, 0, 1);
+
+  const playerIndex = currState.snakes.findIndex((s) => s.is_player);
+  const currPlayer = playerIndex >= 0 ? currState.snakes[playerIndex] : undefined;
 
   let camX = currState.width / 2;
   let camY = currState.height / 2;
-  if (currPlayer?.alive) {
-    const [cx, cy] = currPlayer.body[0];
-    if (prevPlayer?.alive && prevPlayer.body.length === currPlayer.body.length) {
-      const [px, py] = prevPlayer.body[0];
-      camX = lerp(px, cx, t);
-      camY = lerp(py, cy, t);
-    } else {
-      camX = cx;
-      camY = cy;
-    }
+  if (currPlayer && playerIndex >= 0) {
+    // currPlayer.body is frozen at the death cell once dead — use it
+    // directly so the camera holds still there instead of snapping to center.
+    const body = currPlayer.alive
+      ? continuousBody(currPlayer, progressFor(currPlayer))
+      : currPlayer.body;
+    [camX, camY] = body[0];
   }
   camX = clamp(camX, VIEWPORT_CELLS_W / 2, currState.width - VIEWPORT_CELLS_W / 2);
   camY = clamp(camY, VIEWPORT_CELLS_H / 2, currState.height - VIEWPORT_CELLS_H / 2);
@@ -182,7 +232,27 @@ function render(
 
   let aiIndex = 0;
   currState.snakes.forEach((snake, i) => {
-    if (!snake.alive) return;
+    if (!snake.alive) {
+      const death = deaths[i];
+      if (!death) return;
+      const elapsed = now - death.diedAt;
+      if (elapsed >= DEATH_FADE_MS) return;
+      ctx.globalAlpha = 1 - elapsed / DEATH_FADE_MS;
+      ctx.fillStyle = DEATH_COLOR;
+      death.body.forEach(([x, y], j) => {
+        const pad = j === 0 ? 1 : 2;
+        ctx.fillRect(
+          x * CELL_SIZE + pad,
+          y * CELL_SIZE + pad,
+          CELL_SIZE - pad * 2,
+          CELL_SIZE - pad * 2,
+        );
+      });
+      const [dx, dy] = death.body[0];
+      drawHeadEmoji(ctx, EMOJI_DEAD, dx, dy);
+      ctx.globalAlpha = 1;
+      return;
+    }
 
     let color: string;
     if (snake.is_player) {
@@ -192,7 +262,7 @@ function render(
       aiIndex += 1;
     }
 
-    const body = interpolatedBody(prevState.snakes[i], snake, t);
+    const body = continuousBody(snake, progressFor(snake));
     ctx.fillStyle = color;
     body.forEach(([x, y], j) => {
       const pad = j === 0 ? 1 : 2;
@@ -204,12 +274,16 @@ function render(
       );
     });
 
+    const [hx, hy] = body[0];
     if (snake.boosted) {
-      const [hx, hy] = body[0];
       ctx.strokeStyle = snake.is_player ? "#facc15" : color;
       ctx.lineWidth = 2;
       ctx.strokeRect(hx * CELL_SIZE - 1, hy * CELL_SIZE - 1, CELL_SIZE + 2, CELL_SIZE + 2);
     }
+
+    const ateAt = ateTimestamps[i];
+    const ateRecently = ateAt !== null && ateAt !== undefined && now - ateAt < EAT_FLASH_MS;
+    drawHeadEmoji(ctx, headEmoji(snake, ateRecently), hx, hy);
   });
 
   ctx.restore();
@@ -221,11 +295,11 @@ export default function GameCanvas() {
   const moduleRef = useRef<EngineModule | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const rafRef = useRef<number>(0);
-  const simRef = useRef<{
-    prev: GameStateJson;
-    curr: GameStateJson;
-    tickTime: number;
-  } | null>(null);
+  const latestStateRef = useRef<GameStateJson | null>(null);
+  const lastTickTimeRef = useRef<number>(0);
+  const deathsRef = useRef<(DeathInfo | null)[]>([]);
+  const ateRef = useRef<(number | null)[]>([]);
+  const gameOverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [score, setScore] = useState(0);
   const [gameOver, setGameOver] = useState(false);
@@ -240,12 +314,17 @@ export default function GameCanvas() {
 
     if (intervalRef.current) clearInterval(intervalRef.current);
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    if (gameOverTimeoutRef.current) clearTimeout(gameOverTimeoutRef.current);
+    gameOverTimeoutRef.current = null;
     gameRef.current?.free();
 
     const game = new mod.Game(cfg);
     gameRef.current = game;
     const initial = game.state();
-    simRef.current = { prev: initial, curr: initial, tickTime: performance.now() };
+    latestStateRef.current = initial;
+    lastTickTimeRef.current = performance.now();
+    deathsRef.current = initial.snakes.map(() => null);
+    ateRef.current = initial.snakes.map(() => null);
     setConfig(cfg);
     setScore(0);
     setGameOver(false);
@@ -258,23 +337,45 @@ export default function GameCanvas() {
         g.tick();
       }
       const nextState = g.state();
-      const sim = simRef.current;
-      simRef.current = {
-        prev: sim ? sim.curr : nextState,
-        curr: nextState,
-        tickTime: performance.now(),
-      };
+      const now = performance.now();
+      const prevState = latestStateRef.current;
+      const deaths = deathsRef.current;
+      const ateAt = ateRef.current;
+      nextState.snakes.forEach((s, i) => {
+        const prevSnake = prevState?.snakes[i];
+        const wasAlive = prevSnake?.alive ?? true;
+        if (wasAlive && !s.alive) {
+          deaths[i] = { body: s.body, diedAt: now };
+        }
+        if (prevSnake && s.body.length > prevSnake.body.length) {
+          ateAt[i] = now;
+        }
+      });
+      latestStateRef.current = nextState;
+      lastTickTimeRef.current = now;
       setScore(g.score());
-      setGameOver(g.is_game_over());
       setBoosted(nextState.snakes.find((s) => s.is_player)?.boosted ?? false);
+
+      // Delay the Game Over overlay so the death fade is actually visible
+      // underneath it instead of being covered up the instant it starts.
+      if (g.is_game_over() && !gameOverTimeoutRef.current) {
+        gameOverTimeoutRef.current = setTimeout(() => setGameOver(true), DEATH_FADE_MS);
+      }
     }, cfg.tickMs);
 
     function frame() {
       const ctx = canvasRef.current?.getContext("2d");
-      const sim = simRef.current;
-      if (ctx && sim) {
-        const elapsedT = clamp((performance.now() - sim.tickTime) / cfg.tickMs, 0, 1);
-        render(ctx, sim.prev, sim.curr, elapsedT);
+      const latest = latestStateRef.current;
+      if (ctx && latest) {
+        render(
+          ctx,
+          latest,
+          deathsRef.current,
+          ateRef.current,
+          cfg,
+          lastTickTimeRef.current,
+          performance.now(),
+        );
       }
       rafRef.current = requestAnimationFrame(frame);
     }
@@ -285,9 +386,8 @@ export default function GameCanvas() {
     let cancelled = false;
 
     async function load() {
-      // Loaded from /public at runtime — kept out of the Next.js bundler
-      // graph since it's a wasm-pack "web" target build, not an ES module
-      // meant to be statically analyzed/bundled.
+      // Loaded from /public at runtime, not bundled — it's a wasm-pack
+      // "web" target build, not an ES module webpack should process.
       // @ts-expect-error — served from public/ at runtime, not part of the TS program
       const mod = (await import(/* webpackIgnore: true */ "/wasm-pkg/engine.js")) as EngineModule;
       await mod.default();
@@ -307,6 +407,7 @@ export default function GameCanvas() {
       cancelled = true;
       if (intervalRef.current) clearInterval(intervalRef.current);
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      if (gameOverTimeoutRef.current) clearTimeout(gameOverTimeoutRef.current);
       gameRef.current?.free();
       gameRef.current = null;
     };

@@ -86,6 +86,15 @@ impl Direction {
         }
     }
 
+    fn to_u8(self) -> u8 {
+        match self {
+            Direction::Up => 0,
+            Direction::Down => 1,
+            Direction::Left => 2,
+            Direction::Right => 3,
+        }
+    }
+
     fn opposite(self) -> Direction {
         match self {
             Direction::Up => Direction::Down,
@@ -115,11 +124,37 @@ struct SnakeState {
     alive: bool,
     is_player: bool,
     boosted: bool,
+    /// Specifically "within proximity_radius of another snake" — a subset
+    /// of `boosted` (which also includes the food-triggered boost). Kept
+    /// separate so the frontend can react differently to "close to another
+    /// snake" vs. "sped up from eating."
+    near_others: bool,
+    /// Current heading, 0=Up/1=Down/2=Left/3=Right — the direction the
+    /// snake is actually moving in right now (only changes at the instant
+    /// a step commits), not necessarily whatever's next in the player's
+    /// input buffer.
+    direction: u8,
+    /// Fractional progress (0.0..1.0, occasionally higher for a boosted
+    /// multi-step tick) toward the next cell, left over after this tick's
+    /// movement. Combined with `direction`, this lets the frontend render
+    /// continuous motion between ticks instead of interpolating over an
+    /// assumed fixed duration that doesn't match the engine's actual
+    /// (non-uniform) step timing.
+    move_progress: f64,
 }
+
+const MAX_QUEUED_DIRECTIONS: usize = 3;
 
 struct Snake {
     body: Vec<(i32, i32)>,
     direction: Direction,
+    /// Player-only input buffer: turns queued faster than the player
+    /// actually steps. Validated against the *previously queued* turn (or
+    /// `direction` if empty) at queue time, so a fast Up/Left/Down burst
+    /// buffers as three legal 90° turns rather than the later presses
+    /// clobbering the earlier ones — and a genuine reversal is rejected
+    /// against whichever turn it would actually follow, not stale state.
+    pending_directions: VecDeque<Direction>,
     alive: bool,
     is_player: bool,
     pending_growth: u32,
@@ -163,6 +198,7 @@ impl Game {
         Snake {
             body,
             direction: Direction::Right,
+            pending_directions: VecDeque::new(),
             alive: true,
             is_player,
             pending_growth: 0,
@@ -286,7 +322,12 @@ impl Game {
         let current = snake.direction;
         let body_len = snake.body.len() as i32;
         let target = self.nearest_food(head);
-        let space_cap = (body_len * 2).clamp(20, 200);
+        // A pocket only exactly as big as the snake is already a trap: by
+        // the time it's fully entered, there's nowhere left to go, and the
+        // snake has likely grown since this decision anyway. Require
+        // several times the body length as breathing room, not just enough
+        // to physically fit.
+        let safety_margin = (body_len * 3).clamp(24, 150);
 
         let candidates: Vec<Direction> = Direction::all()
             .into_iter()
@@ -300,8 +341,8 @@ impl Game {
             if !self.is_safe(next, index) {
                 continue;
             }
-            let space = self.flood_fill_space(next, index, space_cap);
-            let has_room = if space >= body_len { 1 } else { 0 };
+            let space = self.flood_fill_space(next, index, safety_margin);
+            let has_room = if space >= safety_margin { 1 } else { 0 };
             let food_dist = target
                 .map(|t| -((next.0 - t.0).abs() + (next.1 - t.1).abs()))
                 .unwrap_or(0);
@@ -402,8 +443,21 @@ impl Game {
     pub fn set_player_direction(&mut self, dir: u8) {
         if let Some(d) = Direction::from_u8(dir) {
             if let Some(player) = self.snakes.iter_mut().find(|s| s.is_player) {
-                if d != player.direction.opposite() {
-                    player.direction = d;
+                let last = player
+                    .pending_directions
+                    .back()
+                    .copied()
+                    .unwrap_or(player.direction);
+                // Skip repeats of the already-intended heading (e.g. key
+                // repeat while holding a direction) so they can't eat up
+                // buffer capacity that a later, different turn needs.
+                let is_new_turn = d != last;
+                let is_legal_turn = d != last.opposite();
+                if is_new_turn
+                    && is_legal_turn
+                    && player.pending_directions.len() < MAX_QUEUED_DIRECTIONS
+                {
+                    player.pending_directions.push_back(d);
                 }
             }
         }
@@ -468,6 +522,9 @@ impl Game {
                 alive: s.alive,
                 is_player: s.is_player,
                 boosted: s.alive && (self.is_near_others(i) || s.food_boost_remaining > 0),
+                near_others: s.alive && self.is_near_others(i),
+                direction: s.direction.to_u8(),
+                move_progress: s.move_progress,
             })
             .collect();
 
@@ -502,6 +559,14 @@ impl Game {
     fn step_one(&mut self, index: usize) {
         if !self.snakes[index].alive {
             return;
+        }
+
+        // The player can take at most one step per tick (speed is hard-
+        // capped at 1.0), so it's safe to pop exactly one buffered turn per
+        // actual step here — each queued direction was already validated
+        // against the one before it at queue time.
+        if let Some(d) = self.snakes[index].pending_directions.pop_front() {
+            self.snakes[index].direction = d;
         }
 
         let head = self.snakes[index].body[0];
@@ -576,10 +641,84 @@ mod tests {
         assert_eq!(game.snakes[player].direction, Direction::Right);
 
         game.set_player_direction(2); // Left — opposite of Right, must be ignored
-        assert_eq!(game.snakes[player].direction, Direction::Right);
+        assert!(game.snakes[player].pending_directions.is_empty());
 
         game.set_player_direction(0); // Up — a valid turn
+        assert_eq!(game.snakes[player].pending_directions.back(), Some(&Direction::Up));
+    }
+
+    #[test]
+    fn buffers_a_quick_burst_of_turns_as_the_next_moves() {
+        // Regression test for the exact scenario reported: rapidly pressing
+        // up/left/down (each a 90° turn from the last) must not let the
+        // snake reverse into itself, and all three turns should still take
+        // effect in order rather than the later presses clobbering earlier
+        // ones because the engine hadn't stepped yet.
+        let mut config = test_config();
+        config.num_ai = 0; // isolate from boost/AI interference
+        let mut game = Game::with_seed(config, 1);
+        let player = game.player_index().unwrap();
+        assert_eq!(game.snakes[player].direction, Direction::Right);
+
+        game.set_player_direction(0); // Up — 90° from Right, legal
+        game.set_player_direction(2); // Left — 90° from Up, legal
+        game.set_player_direction(1); // Down — 90° from Left, legal (not opposite of Left)
+        assert_eq!(game.snakes[player].pending_directions.len(), 3);
+
+        let start = game.snakes[player].body[0];
+        // player_speed = 1/3 in test_config, so each buffered turn takes 3
+        // ticks to actually execute as a step.
+        for _ in 0..3 {
+            game.tick();
+        }
         assert_eq!(game.snakes[player].direction, Direction::Up);
+        let after_up = game.snakes[player].body[0];
+        assert_eq!(after_up, (start.0, start.1 - 1));
+
+        for _ in 0..3 {
+            game.tick();
+        }
+        assert_eq!(game.snakes[player].direction, Direction::Left);
+        let after_left = game.snakes[player].body[0];
+        assert_eq!(after_left, (after_up.0 - 1, after_up.1));
+
+        for _ in 0..3 {
+            game.tick();
+        }
+        assert_eq!(game.snakes[player].direction, Direction::Down);
+        assert!(game.snakes[player].alive);
+        let after_down = game.snakes[player].body[0];
+        assert_eq!(after_down, (after_left.0, after_left.1 + 1));
+    }
+
+    #[test]
+    fn rejects_a_reversal_against_the_last_queued_turn_not_stale_state() {
+        let mut game = Game::with_seed(test_config(), 1);
+        let player = game.player_index().unwrap();
+
+        game.set_player_direction(0); // Up — queued, legal from Right
+        game.set_player_direction(1); // Down — opposite of the queued Up, must be rejected
+        assert_eq!(game.snakes[player].pending_directions.len(), 1);
+        assert_eq!(game.snakes[player].pending_directions.back(), Some(&Direction::Up));
+
+        // A legal follow-up should still queue fine after the rejection.
+        game.set_player_direction(2); // Left — 90° from the queued Up
+        assert_eq!(game.snakes[player].pending_directions.len(), 2);
+    }
+
+    #[test]
+    fn caps_the_queue_and_ignores_repeats_of_the_intended_heading() {
+        let mut game = Game::with_seed(test_config(), 1);
+        let player = game.player_index().unwrap();
+
+        game.set_player_direction(0); // Up
+        game.set_player_direction(0); // repeat — should not consume a queue slot
+        assert_eq!(game.snakes[player].pending_directions.len(), 1);
+
+        game.set_player_direction(2); // Left
+        game.set_player_direction(1); // Down
+        game.set_player_direction(3); // Right — queue already at MAX_QUEUED_DIRECTIONS, dropped
+        assert_eq!(game.snakes[player].pending_directions.len(), MAX_QUEUED_DIRECTIONS);
     }
 
     #[test]
@@ -697,5 +836,89 @@ mod tests {
         assert_eq!(game.score, config.food_score);
         assert_eq!(game.snakes[player].body.len(), len_before + 1);
         assert!(!game.food.contains(&next));
+    }
+
+    #[test]
+    fn spawn_lanes_never_collide_even_with_many_ai_snakes() {
+        let mut config = test_config();
+        config.height = 20; // small on purpose to stress the lane spacing
+        config.num_ai = 16;
+        let game = Game::with_seed(config, 1);
+
+        // sanitized() may have trimmed num_ai to fit height=20, but however
+        // many snakes actually spawned, none of their starting cells overlap.
+        let mut seen = HashSet::new();
+        for snake in &game.snakes {
+            for seg in &snake.body {
+                assert!(seen.insert(*seg), "duplicate starting cell {:?}", seg);
+            }
+        }
+    }
+
+    #[test]
+    fn ai_flood_fill_avoids_a_dead_end_even_toward_food() {
+        let mut config = test_config();
+        config.num_ai = 1;
+        let mut game = Game::with_seed(config, 1);
+        let ai = game.snakes.iter().position(|s| !s.is_player).unwrap();
+
+        // Build a one-cell-wide dead-end pocket directly ahead of the AI
+        // (east), sealed except for the entrance, with food inside it —
+        // greedy nearest-food would walk straight in and trap itself.
+        let head = (10, 10);
+        game.snakes[ai].body = vec![head, (9, 10), (8, 10), (7, 10)];
+        game.snakes[ai].direction = Direction::Right;
+
+        let blocker = game.snakes.iter().position(|s| s.is_player).unwrap();
+        // Wall off the pocket at (11,10) using the player snake's body as
+        // obstacles on three sides, leaving only the entrance at (11,10)
+        // open from `head`, with food at (12,10) inside the pocket.
+        game.snakes[blocker].body = vec![
+            (11, 9), (12, 9), (13, 9), (13, 10), (13, 11), (12, 11), (11, 11),
+        ];
+        game.food = vec![(12, 10)];
+
+        let d = game.choose_ai_direction(ai);
+        assert_ne!(
+            d,
+            Direction::Right,
+            "should avoid walking into the sealed pocket even though food is there"
+        );
+    }
+
+    #[test]
+    fn most_ai_snakes_survive_a_long_run() {
+        // Regression guard for the flood-fill lookahead in
+        // choose_ai_direction: a naive greedy-to-food AI tends to trap
+        // itself over time as snakes grow, so this asserts a healthy
+        // majority of AI snakes are still alive after a long run, and
+        // that survival has stabilized rather than trending toward zero.
+        let mut config = test_config();
+        config.width = 100;
+        config.height = 80;
+        config.num_ai = 8;
+        let mut game = Game::with_seed(config, 1);
+
+        let ai_alive_count =
+            |g: &Game| g.snakes.iter().filter(|s| s.alive && !s.is_player).count();
+
+        for _ in 0..150 {
+            game.tick();
+        }
+        let mid_alive = ai_alive_count(&game);
+
+        for _ in 0..150 {
+            game.tick();
+        }
+        let end_alive = ai_alive_count(&game);
+
+        assert!(
+            end_alive >= 5,
+            "expected most of 8 AI snakes to survive, got {end_alive}"
+        );
+        assert!(
+            end_alive >= mid_alive,
+            "AI survival should stabilize, not keep declining (mid={mid_alive}, end={end_alive})"
+        );
     }
 }
