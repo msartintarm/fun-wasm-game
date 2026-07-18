@@ -144,3 +144,7 @@ vite.config.ts.timestamp-*
 
 # temp files
 *~
+
+# Rust
+/engine/target
+target/

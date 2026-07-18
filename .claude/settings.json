@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm --version)",
+      "Bash(npm -v)",
+      "Bash(npm install)",
+      "Bash(npm install *)",
+      "Bash(npm ci)",
+      "Bash(npm run *)",
+      "Bash(npx create-next-app*)",
+      "Bash(cargo)",
+      "Bash(cargo *)",
+      "Bash(rustc)",
+      "Bash(rustc *)",
+      "Bash(rustup)",
+      "Bash(rustup *)",
+      "Bash(wasm-pack)",
+      "Bash(wasm-pack *)",
+      "Bash(which *)",
+      "Bash(mkdir -p *)",
+      "Bash(cp -r *)",
+      "Bash(mv *)"
+    ]
+  }
+}
