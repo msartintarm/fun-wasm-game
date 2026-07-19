@@ -97,6 +97,7 @@ const FALLBACK_CONFIG: FullConfig = {
   foodTargeting: "nearest_reachable",
   waveMode: false,
   vanquishScorePercent: 50,
+  spectatorMode: false,
   tickMs: TICK_MS_DEFAULT,
 };
 
@@ -424,25 +425,36 @@ function render(
 
   let camX = currState.width / 2;
   let camY = currState.height / 2;
-  if (currPlayer && playerIndex >= 0) {
-    // currPlayer.body is frozen at the death cell once dead — use it
-    // directly so the camera holds still there instead of snapping to center.
-    const body = currPlayer.alive
-      ? interpolatedBody(prevState.snakes[playerIndex], currPlayer, t)
-      : currPlayer.body;
-    [camX, camY] = body[0];
-  }
-  camX = clamp(camX, VIEWPORT_CELLS_W / 2, currState.width - VIEWPORT_CELLS_W / 2);
-  camY = clamp(camY, VIEWPORT_CELLS_H / 2, currState.height - VIEWPORT_CELLS_H / 2);
+  // No player to follow in spectator mode — fit the whole arena in the
+  // viewport (camX/camY already default to its center) instead of panning
+  // to track anyone. scale=1 in every other mode is exactly the original,
+  // unscaled behavior.
+  let scale = 1;
 
-  const offsetX = CANVAS_W / 2 - camX * CELL_SIZE;
-  const offsetY = CANVAS_H / 2 - camY * CELL_SIZE;
+  if (config.spectatorMode) {
+    scale = Math.min(CANVAS_W / (currState.width * CELL_SIZE), CANVAS_H / (currState.height * CELL_SIZE));
+  } else {
+    if (currPlayer && playerIndex >= 0) {
+      // currPlayer.body is frozen at the death cell once dead — use it
+      // directly so the camera holds still there instead of snapping to center.
+      const body = currPlayer.alive
+        ? interpolatedBody(prevState.snakes[playerIndex], currPlayer, t)
+        : currPlayer.body;
+      [camX, camY] = body[0];
+    }
+    camX = clamp(camX, VIEWPORT_CELLS_W / 2, currState.width - VIEWPORT_CELLS_W / 2);
+    camY = clamp(camY, VIEWPORT_CELLS_H / 2, currState.height - VIEWPORT_CELLS_H / 2);
+  }
+
+  const offsetX = CANVAS_W / 2 - camX * CELL_SIZE * scale;
+  const offsetY = CANVAS_H / 2 - camY * CELL_SIZE * scale;
 
   ctx.fillStyle = "#020617";
   ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
   ctx.save();
   ctx.translate(offsetX, offsetY);
+  ctx.scale(scale, scale);
 
   // Static checkerboard + border, pre-rasterized once in startGame() — the
   // browser clips this to the visible canvas area, so it costs one blit
@@ -773,8 +785,15 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
     async function load() {
       // Loaded from /public at runtime, not bundled — it's a wasm-pack
       // "web" target build, not an ES module webpack should process.
-      // @ts-expect-error — served from public/ at runtime, not part of the TS program
-      const mod = (await import(/* webpackIgnore: true */ "/wasm-pkg/engine.js")) as EngineModule;
+      // Absolute path, so (unlike next/link or next/image) it needs the
+      // same NEXT_PUBLIC_BASE_PATH prefix next.config.ts's basePath uses —
+      // empty locally, e.g. "/snake" once deployed under a subpath. A
+      // template-literal specifier, unlike a plain string literal, isn't
+      // statically resolved against the TS program, so the directive that
+      // used to suppress a "not found" error here is no longer needed.
+      const mod = (await import(
+        /* webpackIgnore: true */ `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/wasm-pkg/engine.js`
+      )) as EngineModule;
       await mod.default();
       if (cancelled) return;
       moduleRef.current = mod;
@@ -835,10 +854,12 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
           className={styles.canvas}
         />
         <div className={styles.scoreOverlay}>
-          <div className={styles.playerScoreRow}>
-            <span>Score: {score}</span>
-            {boosted && !gameOver && <span className={styles.boost}>⚡ Boost!</span>}
-          </div>
+          {!config.spectatorMode && (
+            <div className={styles.playerScoreRow}>
+              <span>Score: {score}</span>
+              {boosted && !gameOver && <span className={styles.boost}>⚡ Boost!</span>}
+            </div>
+          )}
           {aiScores.length > 0 && (
             <ul className={styles.aiScoreList}>
               {aiScores.map((entry) => (

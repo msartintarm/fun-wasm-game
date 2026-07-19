@@ -31,6 +31,11 @@ pub struct Config {
     /// Percentage of the dying enemy's own score the player inherits on
     /// every AI death (0 disables it) — see `Game::award_vanquish_score`.
     pub vanquish_score_percent: u32,
+    /// No player snake spawns at all — `num_ai` AI-only. `tick()`'s
+    /// game-over check naturally never fires without a player to die, so
+    /// a spectator match just keeps running (wave_mode keeps it alive
+    /// indefinitely rather than idling once every AI is dead).
+    pub spectator_mode: bool,
 }
 
 /// Strategy AI uses to pick a food target, selected via `Config`. Each
@@ -67,6 +72,7 @@ impl Default for Config {
             food_targeting: FoodTargeting::NearestReachable,
             wave_mode: false,
             vanquish_score_percent: 50,
+            spectator_mode: false,
         }
     }
 }
@@ -91,6 +97,7 @@ impl Config {
             food_targeting: self.food_targeting,
             wave_mode: self.wave_mode,
             vanquish_score_percent: self.vanquish_score_percent.clamp(0, 1000),
+            spectator_mode: self.spectator_mode,
         }
     }
 }

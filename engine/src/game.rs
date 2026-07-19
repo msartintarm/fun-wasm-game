@@ -133,13 +133,19 @@ impl Game {
         }
     }
 
-    /// Every 2nd body segment (1-based: indices 1, 3, 5, ...) becomes food.
+    /// Every 2nd body segment (1-based: indices 1, 3, 5, ...) becomes food —
+    /// except in spectator mode, where there's no player competing for food,
+    /// so every segment drops to keep a bots-only match well fed.
     fn convert_corpse_to_food(&mut self, index: usize) {
         let snake = &self.snakes[index];
         if snake.is_player {
             return;
         }
-        let drops: Vec<(i32, i32)> = snake.body.iter().skip(1).step_by(2).copied().collect();
+        let drops: Vec<(i32, i32)> = if self.config.spectator_mode {
+            snake.body.iter().skip(1).copied().collect()
+        } else {
+            snake.body.iter().skip(1).step_by(2).copied().collect()
+        };
         self.food.extend(drops);
     }
 
@@ -274,16 +280,21 @@ impl Game {
             current_wave_size: config.num_ai,
         };
 
-        let total = config.num_ai as usize + 1;
-        game.snakes.push(Game::spawn_snake(
-            config.width,
-            config.height,
-            0,
-            total,
-            true,
-            FoodTargeting::Nearest,
-            AiBehavior::Default,
-        ));
+        // spectator_mode: no player lane needed, so AI take index 0.. instead
+        // of 1.. and `total` (used for lane-spacing math) drops the +1.
+        let ai_index_offset = if config.spectator_mode { 0 } else { 1 };
+        let total = config.num_ai as usize + ai_index_offset;
+        if !config.spectator_mode {
+            game.snakes.push(Game::spawn_snake(
+                config.width,
+                config.height,
+                0,
+                total,
+                true,
+                FoodTargeting::Nearest,
+                AiBehavior::Default,
+            ));
+        }
         for i in 0..config.num_ai as usize {
             // Only the second AI spawned gets the configured food-targeting
             // strategy, and only the first gets the speed-seeking movement
@@ -299,7 +310,7 @@ impl Game {
             game.snakes.push(Game::spawn_snake(
                 config.width,
                 config.height,
-                i + 1,
+                i + ai_index_offset,
                 total,
                 false,
                 food_targeting,
@@ -444,10 +455,14 @@ impl Game {
             self.advance_wave();
         }
 
+        // unwrap_or(false), not true: when there's no player at all
+        // (spectator_mode), this must never end the match — the `.map`
+        // branch is the only one ever reached when a player does exist, so
+        // this changes nothing about the normal (non-spectator) case.
         if self
             .player_index()
             .map(|i| !self.snakes[i].alive)
-            .unwrap_or(true)
+            .unwrap_or(false)
         {
             self.game_over = true;
         }

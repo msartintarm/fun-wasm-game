@@ -17,9 +17,10 @@ export interface EngineConfig {
   boostedFoodScore: number;
   minFood: number;
   foodTargeting: FoodTargeting;
-  // See engine::Config::wave_mode / vanquish_score_percent.
+  // See engine::Config::wave_mode / vanquish_score_percent / spectator_mode.
   waveMode: boolean;
   vanquishScorePercent: number;
+  spectatorMode: boolean;
 }
 
 export interface FullConfig extends EngineConfig {
@@ -99,6 +100,7 @@ export const CONFIG_PRESETS: ConfigPreset[] = [
       foodTargeting: "nearest_reachable",
       waveMode: true,
       vanquishScorePercent: 100,
+      spectatorMode: false,
     },
   },
   {
@@ -118,6 +120,7 @@ export const CONFIG_PRESETS: ConfigPreset[] = [
       foodTargeting: "nearest_reachable",
       waveMode: false,
       vanquishScorePercent: 50,
+      spectatorMode: false,
     },
   },
   {
@@ -137,6 +140,30 @@ export const CONFIG_PRESETS: ConfigPreset[] = [
       foodTargeting: "nearest_reachable",
       waveMode: false,
       vanquishScorePercent: 50,
+      spectatorMode: false,
+    },
+  },
+  {
+    name: "Spectator",
+    config: {
+      width: 100,
+      height: 80,
+      numAi: 20,
+      tickMs: TICK_MS_DEFAULT,
+      playerSpeed: 1,
+      boostMultiplier: 1.6,
+      proximityRadius: 3,
+      foodBoostTicks: 20,
+      foodScore: 10,
+      boostedFoodScore: 25,
+      minFood: 18,
+      foodTargeting: "nearest_reachable",
+      // waveMode keeps new AI spawning after every full wipe — without it,
+      // "no player, never ends" would just mean the arena goes empty and
+      // sits idle forever once every AI dies.
+      waveMode: true,
+      vanquishScorePercent: 50,
+      spectatorMode: true,
     },
   },
 ];

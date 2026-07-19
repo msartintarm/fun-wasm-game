@@ -22,6 +22,7 @@ fn test_config() -> Config {
         food_targeting: FoodTargeting::Nearest,
         wave_mode: false,
         vanquish_score_percent: 0,
+        spectator_mode: false,
     }
 }
 
@@ -929,6 +930,28 @@ fn dying_ai_with_a_short_body_converts_only_the_segments_that_exist() {
 }
 
 #[test]
+fn dying_ai_in_spectator_mode_converts_every_body_segment_to_food() {
+    let mut config = test_config();
+    config.num_ai = 1;
+    config.spectator_mode = true;
+    let mut game = Game::with_seed(config, 1);
+    let ai = game.snakes.iter().position(|s| !s.is_player).unwrap();
+
+    let body: Vec<(i32, i32)> = (0..8).map(|i| (49 - i, 10)).collect();
+    game.snakes[ai].body = body.clone();
+    game.snakes[ai].direction = Direction::Right;
+    game.food.clear();
+
+    game.step_one(ai);
+
+    assert!(!game.snakes[ai].alive);
+    assert_eq!(game.food.len(), 7);
+    for segment in &body[1..] {
+        assert!(game.food.contains(segment));
+    }
+}
+
+#[test]
 fn player_death_does_not_convert_body_segments_to_food() {
     let config = test_config();
     let mut game = Game::with_seed(config, 1);
@@ -1054,4 +1077,54 @@ fn vanquish_score_reflects_score_the_enemy_actually_earned_through_play() {
     assert!(!game.snakes[ai].alive);
     assert_eq!(game.score, score_before + 30);
     assert_eq!(game.snakes[game.player_index().unwrap()].score, 30);
+}
+
+#[test]
+fn spectator_mode_spawns_no_player() {
+    let mut config = test_config();
+    config.num_ai = 5;
+    config.spectator_mode = true;
+    let game = Game::with_seed(config, 1);
+
+    assert_eq!(game.snakes.len(), 5);
+    assert!(game.snakes.iter().all(|s| !s.is_player));
+    assert_eq!(game.player_index(), None);
+    for snake in &game.snakes {
+        assert_eq!(snake.body.len(), STARTING_LENGTH);
+        assert!(snake.alive);
+    }
+}
+
+#[test]
+fn spectator_mode_never_ends_even_when_every_ai_is_dead() {
+    let mut config = test_config();
+    config.num_ai = 3;
+    config.spectator_mode = true;
+    let mut game = Game::with_seed(config, 1);
+
+    for snake in &mut game.snakes {
+        snake.alive = false;
+    }
+    game.tick();
+
+    assert!(!game.game_over);
+}
+
+#[test]
+fn spectator_mode_composes_with_wave_mode() {
+    let mut config = test_config();
+    config.num_ai = 2;
+    config.spectator_mode = true;
+    config.wave_mode = true;
+    let mut game = Game::with_seed(config, 1);
+    assert_eq!(game.current_wave_size, 2);
+
+    for i in 0..game.snakes.len() {
+        game.snakes[i].alive = false;
+    }
+    game.tick();
+
+    assert!(!game.game_over);
+    assert_eq!(game.current_wave_size, 3);
+    assert_eq!(game.snakes.iter().filter(|s| s.alive).count(), 3);
 }
