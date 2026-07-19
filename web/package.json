@@ -13,7 +13,8 @@
     "test:e2e": "playwright test",
     "test:e2e:install": "playwright install chromium",
     "test:unit": "vitest run",
-    "dev:restart": "bash scripts/dev-restart.sh"
+    "dev:restart": "bash scripts/dev-restart.sh",
+    "check": "tsc --noEmit && eslint src/ && vitest run"
   },
   "dependencies": {
     "@tonejs/midi": "^2.0.28",

@@ -5,7 +5,7 @@ use crate::direction::Direction;
 use crate::game::Game;
 use crate::snake::{AiBehavior, DeathCause};
 use crate::test_support::game_from_grid;
-use crate::{MAX_QUEUED_DIRECTIONS, PROXIMITY_TICK_BONUS, STARTING_LENGTH};
+use crate::{MAX_QUEUED_DIRECTIONS, MAX_WAVE_ENEMIES, PROXIMITY_TICK_BONUS, STARTING_LENGTH};
 
 fn test_config() -> Config {
     Config {
@@ -20,6 +20,8 @@ fn test_config() -> Config {
         boosted_food_score: 25,
         min_food: 18,
         food_targeting: FoodTargeting::Nearest,
+        wave_mode: false,
+        vanquish_score_percent: 0,
     }
 }
 
@@ -772,4 +774,284 @@ fn diagnose_ai_other_collisions() {
     );
     eprintln!("death tally across 80 seeded games: {death_tally:?}");
     eprintln!("average ticks survived per snake: {avg_survival:.0}");
+}
+
+#[test]
+fn wave_mode_starts_with_the_configured_num_ai_as_wave_size() {
+    let mut config = test_config();
+    config.num_ai = 3;
+    config.wave_mode = true;
+    let game = Game::with_seed(config, 1);
+    assert_eq!(game.snakes.len(), 4);
+    assert_eq!(game.current_wave_size, 3);
+}
+
+#[test]
+fn wave_mode_off_never_spawns_additional_ai_when_the_only_ai_dies() {
+    let mut config = test_config();
+    config.num_ai = 1;
+    config.wave_mode = false;
+    let mut game = Game::with_seed(config, 1);
+    let ai = game.snakes.iter().position(|s| !s.is_player).unwrap();
+    game.snakes[ai].alive = false;
+    let count_before = game.snakes.len();
+
+    game.tick();
+
+    assert_eq!(game.snakes.len(), count_before);
+}
+
+#[test]
+fn wave_clears_spawn_the_next_wave_with_one_more_enemy() {
+    let mut config = test_config();
+    config.num_ai = 2;
+    config.wave_mode = true;
+    let mut game = Game::with_seed(config, 1);
+    assert_eq!(game.current_wave_size, 2);
+
+    for i in 0..game.snakes.len() {
+        if !game.snakes[i].is_player {
+            game.snakes[i].alive = false;
+        }
+    }
+    game.tick();
+    assert_eq!(game.current_wave_size, 3);
+    assert_eq!(
+        game.snakes.iter().filter(|s| !s.is_player && s.alive).count(),
+        3
+    );
+
+    for i in 0..game.snakes.len() {
+        if !game.snakes[i].is_player {
+            game.snakes[i].alive = false;
+        }
+    }
+    game.tick();
+    assert_eq!(game.current_wave_size, 4);
+    assert_eq!(
+        game.snakes.iter().filter(|s| !s.is_player && s.alive).count(),
+        4
+    );
+}
+
+#[test]
+fn wave_escalation_is_capped_at_the_maximum_wave_size() {
+    let mut config = test_config();
+    config.num_ai = 1;
+    config.wave_mode = true;
+    let mut game = Game::with_seed(config, 1);
+
+    for _ in 0..(MAX_WAVE_ENEMIES + 3) {
+        for i in 0..game.snakes.len() {
+            if !game.snakes[i].is_player {
+                game.snakes[i].alive = false;
+            }
+        }
+        game.tick();
+        assert!(game.current_wave_size <= MAX_WAVE_ENEMIES);
+    }
+    assert_eq!(game.current_wave_size, MAX_WAVE_ENEMIES);
+}
+
+#[test]
+fn wave_cap_never_drops_below_a_larger_configured_starting_num_ai() {
+    let mut config = test_config();
+    // Deliberately above MAX_WAVE_ENEMIES, and within test_config's
+    // height=50 lane capacity (46), so sanitize() doesn't trim it either.
+    config.num_ai = MAX_WAVE_ENEMIES + 8;
+    config.wave_mode = true;
+    let mut game = Game::with_seed(config, 1);
+    assert_eq!(game.current_wave_size, config.num_ai);
+
+    // The cap (MAX_WAVE_ENEMIES.max(num_ai)) coincides with the starting
+    // size here, so there's no headroom left to climb — a clear holds
+    // steady at the same size rather than dropping below it or growing
+    // past it.
+    for i in 0..game.snakes.len() {
+        if !game.snakes[i].is_player {
+            game.snakes[i].alive = false;
+        }
+    }
+    game.tick();
+
+    assert_eq!(game.current_wave_size, config.num_ai);
+    assert_eq!(
+        game.snakes.iter().filter(|s| !s.is_player && s.alive).count() as u32,
+        config.num_ai
+    );
+}
+
+#[test]
+fn dying_ai_converts_every_second_body_segment_to_food_one_based() {
+    let mut config = test_config();
+    config.num_ai = 1;
+    let mut game = Game::with_seed(config, 1);
+    let ai = game.snakes.iter().position(|s| !s.is_player).unwrap();
+
+    // 8-long body heading right, head at the last in-bounds column — the
+    // next step_one call walks it straight into the east wall.
+    let body: Vec<(i32, i32)> = (0..8).map(|i| (49 - i, 10)).collect();
+    game.snakes[ai].body = body.clone();
+    game.snakes[ai].direction = Direction::Right;
+    game.food.clear();
+
+    game.step_one(ai);
+
+    assert!(!game.snakes[ai].alive);
+    assert!(matches!(game.snakes[ai].death_cause, Some(DeathCause::Wall)));
+    assert_eq!(game.food.len(), 4);
+    assert!(game.food.contains(&body[1]));
+    assert!(game.food.contains(&body[3]));
+    assert!(game.food.contains(&body[5]));
+    assert!(game.food.contains(&body[7]));
+}
+
+#[test]
+fn dying_ai_with_a_short_body_converts_only_the_segments_that_exist() {
+    let mut config = test_config();
+    config.num_ai = 1;
+    let mut game = Game::with_seed(config, 1);
+    let ai = game.snakes.iter().position(|s| !s.is_player).unwrap();
+
+    // 5-long (odd) body — index 5 would be the next drop but doesn't exist,
+    // so this proves the conversion stops rather than panicking.
+    let body: Vec<(i32, i32)> = (0..5).map(|i| (49 - i, 10)).collect();
+    game.snakes[ai].body = body.clone();
+    game.snakes[ai].direction = Direction::Right;
+    game.food.clear();
+
+    game.step_one(ai);
+
+    assert!(!game.snakes[ai].alive);
+    assert_eq!(game.food.len(), 2);
+    assert!(game.food.contains(&body[1]));
+    assert!(game.food.contains(&body[3]));
+}
+
+#[test]
+fn player_death_does_not_convert_body_segments_to_food() {
+    let config = test_config();
+    let mut game = Game::with_seed(config, 1);
+    let player = game.player_index().unwrap();
+
+    let body: Vec<(i32, i32)> = (0..8).map(|i| (49 - i, 10)).collect();
+    game.snakes[player].body = body;
+    game.snakes[player].direction = Direction::Right;
+    game.food.clear();
+
+    game.step_one(player);
+
+    assert!(!game.snakes[player].alive);
+    assert_eq!(game.food.len(), 0);
+}
+
+#[test]
+fn vanquish_score_awards_the_configured_percent_of_the_vanquished_enemys_score() {
+    let mut config = test_config();
+    config.num_ai = 1;
+    config.vanquish_score_percent = 100;
+    let mut game = Game::with_seed(config, 1);
+    let ai = game.snakes.iter().position(|s| !s.is_player).unwrap();
+    let player = game.player_index().unwrap();
+
+    let body: Vec<(i32, i32)> = (0..8).map(|i| (49 - i, 10)).collect();
+    game.snakes[ai].body = body;
+    game.snakes[ai].direction = Direction::Right;
+    game.snakes[ai].score = 42; // deliberately unrelated to body length (8)
+    let score_before = game.score;
+
+    game.step_one(ai);
+
+    assert!(!game.snakes[ai].alive);
+    assert_eq!(game.score, score_before + 42);
+    assert_eq!(game.snakes[player].score, 42);
+}
+
+#[test]
+fn vanquish_score_awards_a_partial_percentage() {
+    let mut config = test_config();
+    config.num_ai = 1;
+    config.vanquish_score_percent = 50;
+    let mut game = Game::with_seed(config, 1);
+    let ai = game.snakes.iter().position(|s| !s.is_player).unwrap();
+    let player = game.player_index().unwrap();
+
+    let body: Vec<(i32, i32)> = (0..8).map(|i| (49 - i, 10)).collect();
+    game.snakes[ai].body = body;
+    game.snakes[ai].direction = Direction::Right;
+    game.snakes[ai].score = 42;
+    let score_before = game.score;
+
+    game.step_one(ai);
+
+    assert_eq!(game.score, score_before + 21);
+    assert_eq!(game.snakes[player].score, 21);
+}
+
+#[test]
+fn vanquish_score_percent_zero_awards_nothing() {
+    let mut config = test_config();
+    config.num_ai = 1;
+    config.vanquish_score_percent = 0;
+    let mut game = Game::with_seed(config, 1);
+    let ai = game.snakes.iter().position(|s| !s.is_player).unwrap();
+
+    let body: Vec<(i32, i32)> = (0..8).map(|i| (49 - i, 10)).collect();
+    game.snakes[ai].body = body;
+    game.snakes[ai].direction = Direction::Right;
+    game.snakes[ai].score = 42;
+    let score_before = game.score;
+
+    game.step_one(ai);
+
+    assert_eq!(game.score, score_before);
+}
+
+#[test]
+fn vanquish_score_does_not_award_for_player_death() {
+    let mut config = test_config();
+    config.vanquish_score_percent = 100;
+    let mut game = Game::with_seed(config, 1);
+    let player = game.player_index().unwrap();
+
+    let body: Vec<(i32, i32)> = (0..8).map(|i| (49 - i, 10)).collect();
+    game.snakes[player].body = body;
+    game.snakes[player].direction = Direction::Right;
+    let score_before = game.score;
+
+    game.step_one(player);
+
+    assert_eq!(game.score, score_before);
+}
+
+#[test]
+fn vanquish_score_reflects_score_the_enemy_actually_earned_through_play() {
+    // Unlike the hand-set-score tests above, this drives the AI's score up
+    // through the real tick()/eating pipeline, not a direct field write —
+    // closes the gap between "the transfer mechanism works" and "it works
+    // with score accumulated the way a real game actually produces it".
+    let mut config = test_config();
+    config.num_ai = 1;
+    config.vanquish_score_percent = 100;
+    let mut game = Game::with_seed(config, 1);
+    let ai = game.snakes.iter().position(|s| !s.is_player).unwrap();
+
+    for _ in 0..3 {
+        let head = game.snakes[ai].body[0];
+        let (dx, dy) = game.snakes[ai].direction.delta();
+        let next = (head.0 + dx, head.1 + dy);
+        game.food = vec![next];
+        game.tick();
+    }
+    assert_eq!(game.snakes[ai].score, 30);
+
+    game.snakes[ai].body = vec![(49, 10), (48, 10), (47, 10), (46, 10)];
+    game.snakes[ai].direction = Direction::Right;
+    let score_before = game.score;
+
+    game.step_one(ai);
+
+    assert!(!game.snakes[ai].alive);
+    assert_eq!(game.score, score_before + 30);
+    assert_eq!(game.snakes[game.player_index().unwrap()].score, 30);
 }

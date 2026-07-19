@@ -1,61 +1,115 @@
 import type { MusicTrackId } from "./tracks";
 
-// The one interface calling code (see hooks/useAudioEngine.ts) depends on —
-// nothing about MIDI, chords, or the underlying playback library leaks past
-// this boundary. Swapping the MIDI-based implementation (midiEngine.ts) for
-// a future Web Audio API-based one is a contained change: implement this
-// interface differently, change nothing at the call sites.
-export interface AudioEngine {
-  // Unlocks/creates the underlying AudioContext. Must be reachable from
-  // inside a real user-gesture event handler's call stack. Idempotent —
-  // safe to call on every keypress.
-  resume(): void;
-
-  // Fire-and-forget. Replaces whatever track is playing (if any) with this
-  // one, looping from bar 0. `undefined` (no track defined for this preset
-  // yet) is a no-op. Safe to call before resume() has fired — the request
-  // is remembered and started once audio actually unlocks.
-  startTrack(id: MusicTrackId | undefined): void;
-
-  stopTrack(): void;
-
-  // Fire-and-forget. Plays one note from whichever chord the current
-  // track's timeline says is active right now. No-op if nothing is
-  // playing, audio isn't resumed yet, or the engine failed to load.
-  triggerPickup(): void;
+// Every side effect an engine can perform, as data. An engine is then just
+// a function that interprets commands — not an object of six methods.
+// Two things fall out of this for free:
+// - the load-before-ready proxy in getAudioEngine() below is one line
+//   ("queue commands, replay them once loaded") instead of one
+//   hand-written wrapper per method;
+// - "does this engine support everything the other one does" becomes a
+//   TypeScript-checked exhaustive switch inside each implementation
+//   (midiEngine.ts / audioFileEngine.ts), not six independently
+//   maintained method bodies that can silently drift apart.
+export enum AudioCommandType {
+  Resume = "resume",
+  StartTrack = "startTrack",
+  StopTrack = "stopTrack",
+  TriggerPickup = "triggerPickup",
+  SetMuted = "setMuted",
+  SetVolume = "setVolume",
+  SetBoosted = "setBoosted",
 }
 
-export const NullAudioEngine: AudioEngine = {
-  resume() {},
-  startTrack() {},
-  stopTrack() {},
-  triggerPickup() {},
+export type AudioCommand =
+  | { type: AudioCommandType.Resume }
+  | { type: AudioCommandType.StartTrack; id: MusicTrackId | undefined }
+  | { type: AudioCommandType.StopTrack }
+  | { type: AudioCommandType.TriggerPickup }
+  | { type: AudioCommandType.SetMuted; muted: boolean }
+  | { type: AudioCommandType.SetVolume; volume: number }
+  // Reflects the player's current "speed mode" (boosted) state — only
+  // audioFileEngine.ts acts on it (fades condition-gated layers in/out);
+  // midiEngine.ts has no layers, so it's a no-op there. Still a required
+  // case in both engines' switches, via assertNever below.
+  | { type: AudioCommandType.SetBoosted; boosted: boolean };
+
+export type AudioEngine = (command: AudioCommand) => void;
+
+export const NullAudioEngine: AudioEngine = () => {};
+
+// For a `default: return assertNever(command)` arm in each engine's
+// dispatch switch — makes "every engine handles every command" an actual
+// compile error on a missing case, not just a convention to remember.
+export function assertNever(value: never): never {
+  throw new Error(`Unhandled audio command: ${JSON.stringify(value)}`);
+}
+
+export enum EngineKind {
+  Midi = "midi",
+  Audio = "audio",
+}
+
+const ENGINE_LOADERS: Record<EngineKind, () => Promise<{ createEngine(): AudioEngine }>> = {
+  [EngineKind.Midi]: () => import("./midiEngine"),
+  [EngineKind.Audio]: () => import("./audioFileEngine"),
 };
 
-let cached: AudioEngine | null = null;
+// Each kind gets its own permanent cache slot — no shared "current kind"
+// pointer to mutate, so switching kinds can't race a still-in-flight load
+// for whichever kind was previously selected against a newer one. "Which
+// kind is selected" lives only as React state (see hooks/useAudioEngine.ts),
+// passed in here as a plain argument.
+const loaded: Partial<Record<EngineKind, AudioEngine>> = {};
+const loading: Partial<Record<EngineKind, Promise<AudioEngine>>> = {};
+
+function loadEngine(kind: EngineKind): Promise<AudioEngine> {
+  if (!loading[kind]) {
+    loading[kind] = ENGINE_LOADERS[kind]()
+      .then((mod) => {
+        const engine = mod.createEngine();
+        loaded[kind] = engine;
+        return engine;
+      })
+      .catch((err) => {
+        console.warn(`Audio engine "${kind}" failed to load; continuing without sound.`, err);
+        loaded[kind] = NullAudioEngine;
+        return NullAudioEngine;
+      });
+  }
+  return loading[kind]!;
+}
 
 // SSR-safe (no window access outside the dynamic import) and never throws —
 // falls back to NullAudioEngine on any load or construction failure, so the
 // game is always fully playable with no sound rather than broken.
-export function getAudioEngine(): AudioEngine {
+export function getAudioEngine(kind: EngineKind): AudioEngine {
   if (typeof window === "undefined") {
     return NullAudioEngine;
   }
-  if (cached) {
-    return cached;
+  if (loaded[kind]) {
+    return loaded[kind]!;
   }
 
-  // Lazily replaced with the real engine once the dynamic import resolves;
-  // calls made before that land on NullAudioEngine and are simply missed
-  // (acceptable — resume() is called from every keypress, so the real
-  // engine is live well before any pickup could plausibly happen).
-  cached = NullAudioEngine;
-  import("./midiEngine")
-    .then((mod) => {
-      cached = mod.createMidiAudioEngine();
-    })
-    .catch((err) => {
-      console.warn("Audio engine failed to load; continuing without sound.", err);
-    });
-  return cached;
+  // Not loaded yet (possibly not even started) — return a proxy that
+  // queues each command and replays it, in order, once the real engine
+  // resolves, instead of silently dropping commands issued before then
+  // (e.g. the Play button firing "resume" then "startTrack" back to back).
+  const pending = loadEngine(kind);
+  return (command) => {
+    pending.then((engine) => engine(command));
+  };
+}
+
+// Pure — takes the registry as an explicit parameter rather than closing
+// over a specific module-level constant, so the exact same function serves
+// both midiEngine.ts's PRESET_TRACKS and audioFileEngine.ts's
+// AUDIO_PRESET_TRACKS.
+export function pickTrackForPreset(
+  presetTracks: Record<string, MusicTrackId[]>,
+  presetName: string,
+  rng: () => number = Math.random,
+): MusicTrackId | undefined {
+  const candidates = presetTracks[presetName];
+  if (!candidates || candidates.length === 0) return undefined;
+  return candidates[Math.floor(rng() * candidates.length)];
 }

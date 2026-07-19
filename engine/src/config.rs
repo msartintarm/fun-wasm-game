@@ -26,6 +26,11 @@ pub struct Config {
     /// compared against the rest, which always keep the original
     /// distance-only targeting regardless of this setting.
     pub food_targeting: FoodTargeting,
+    /// Escalating AI waves — see `Game::advance_wave`.
+    pub wave_mode: bool,
+    /// Percentage of the dying enemy's own score the player inherits on
+    /// every AI death (0 disables it) — see `Game::award_vanquish_score`.
+    pub vanquish_score_percent: u32,
 }
 
 /// Strategy AI uses to pick a food target, selected via `Config`. Each
@@ -60,6 +65,8 @@ impl Default for Config {
             boosted_food_score: 25,
             min_food: 18,
             food_targeting: FoodTargeting::NearestReachable,
+            wave_mode: false,
+            vanquish_score_percent: 50,
         }
     }
 }
@@ -82,6 +89,8 @@ impl Config {
             boosted_food_score: self.boosted_food_score.clamp(1, 1000),
             min_food: self.min_food.clamp(1, 300),
             food_targeting: self.food_targeting,
+            wave_mode: self.wave_mode,
+            vanquish_score_percent: self.vanquish_score_percent.clamp(0, 1000),
         }
     }
 }

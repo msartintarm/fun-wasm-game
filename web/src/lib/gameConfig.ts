@@ -17,6 +17,9 @@ export interface EngineConfig {
   boostedFoodScore: number;
   minFood: number;
   foodTargeting: FoodTargeting;
+  // See engine::Config::wave_mode / vanquish_score_percent.
+  waveMode: boolean;
+  vanquishScorePercent: number;
 }
 
 export interface FullConfig extends EngineConfig {
@@ -25,8 +28,10 @@ export interface FullConfig extends EngineConfig {
 
 export const TICK_MS_DEFAULT = 90;
 
+type NumericConfigKey = { [K in keyof FullConfig]: FullConfig[K] extends number ? K : never }[keyof FullConfig];
+
 export interface ConfigFieldMeta {
-  key: keyof FullConfig;
+  key: NumericConfigKey;
   label: string;
   min: number;
   max: number;
@@ -74,24 +79,9 @@ export interface ConfigPreset {
   config: FullConfig;
 }
 
+// Duel is first (and so the default on load / Play) — CONFIG_PRESETS[0] is
+// what handlePlay/startGame use to start the very first game.
 export const CONFIG_PRESETS: ConfigPreset[] = [
-  {
-    name: "Chaos Arena",
-    config: {
-      width: 80,
-      height: 60,
-      numAi: 30,
-      tickMs: TICK_MS_DEFAULT,
-      playerSpeed: 1,
-      boostMultiplier: 1.6,
-      proximityRadius: 3,
-      foodBoostTicks: 20,
-      foodScore: 10,
-      boostedFoodScore: 25,
-      minFood: 18,
-      foodTargeting: "nearest_reachable",
-    },
-  },
   {
     name: "Duel",
     config: {
@@ -107,6 +97,27 @@ export const CONFIG_PRESETS: ConfigPreset[] = [
       boostedFoodScore: 25,
       minFood: 18,
       foodTargeting: "nearest_reachable",
+      waveMode: true,
+      vanquishScorePercent: 100,
+    },
+  },
+  {
+    name: "Chaos Arena",
+    config: {
+      width: 80,
+      height: 60,
+      numAi: 30,
+      tickMs: TICK_MS_DEFAULT,
+      playerSpeed: 1,
+      boostMultiplier: 1.6,
+      proximityRadius: 3,
+      foodBoostTicks: 20,
+      foodScore: 10,
+      boostedFoodScore: 25,
+      minFood: 18,
+      foodTargeting: "nearest_reachable",
+      waveMode: false,
+      vanquishScorePercent: 50,
     },
   },
   {
@@ -124,6 +135,8 @@ export const CONFIG_PRESETS: ConfigPreset[] = [
       boostedFoodScore: 25,
       minFood: 18,
       foodTargeting: "nearest_reachable",
+      waveMode: false,
+      vanquishScorePercent: 50,
     },
   },
 ];

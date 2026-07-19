@@ -43,3 +43,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# raw audio source masters — large, not deployable as-is; only the
+# processed output (public/audio/) is committed. See scripts/process-audio-assets.mjs.
+/audio-src

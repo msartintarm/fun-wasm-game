@@ -109,4 +109,6 @@ pub struct GameState {
     pub(crate) food: Vec<(i32, i32)>,
     pub(crate) score: u32,
     pub(crate) game_over: bool,
+    /// Current wave's enemy count (meaningless unless `wave_mode` is on).
+    pub(crate) wave: u32,
 }

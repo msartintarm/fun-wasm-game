@@ -5,7 +5,7 @@ use wasm_bindgen::prelude::*;
 use crate::config::{Config, FoodTargeting};
 use crate::direction::Direction;
 use crate::snake::{AiBehavior, DeathCause, GameState, Snake, SnakeState};
-use crate::{MAX_QUEUED_DIRECTIONS, PROXIMITY_TICK_BONUS, STARTING_LENGTH};
+use crate::{MAX_QUEUED_DIRECTIONS, MAX_WAVE_ENEMIES, PROXIMITY_TICK_BONUS, STARTING_LENGTH};
 
 #[wasm_bindgen]
 pub struct Game {
@@ -15,6 +15,8 @@ pub struct Game {
     pub(crate) score: u32,
     pub(crate) game_over: bool,
     pub(crate) rng_state: u64,
+    /// Current wave's enemy count — see `advance_wave`.
+    pub(crate) current_wave_size: u32,
 }
 
 impl Game {
@@ -87,6 +89,72 @@ impl Game {
                 return;
             }
         }
+    }
+
+    /// Like `spawn_food`'s retry loop, not `spawn_snake`'s lane math —
+    /// mid-game the board isn't empty, so this needs an occupancy check.
+    fn spawn_ai_snake_mid_game(&mut self) -> Snake {
+        let width = self.config.width;
+        let height = self.config.height;
+        loop {
+            let start_x = (STARTING_LENGTH as i32 - 1)
+                + self.random_range((width - STARTING_LENGTH as i32 + 1).max(1));
+            let start_y = self.random_range(height);
+            let body: Vec<(i32, i32)> =
+                (0..STARTING_LENGTH as i32).map(|i| (start_x - i, start_y)).collect();
+            if body.iter().all(|&pos| !self.occupied(pos)) {
+                return Snake {
+                    body,
+                    direction: Direction::Right,
+                    pending_directions: VecDeque::new(),
+                    alive: true,
+                    is_player: false,
+                    pending_growth: 0,
+                    move_progress: 0.0,
+                    food_boost_remaining: 0,
+                    death_cause: None,
+                    score: 0,
+                    food_targeting: FoodTargeting::Nearest,
+                    ai_behavior: AiBehavior::Default,
+                };
+            }
+        }
+    }
+
+    /// One more enemy than the last wave, capped so a starting `num_ai`
+    /// above `MAX_WAVE_ENEMIES` is never contradicted (it just means no
+    /// headroom to climb further).
+    fn advance_wave(&mut self) {
+        let cap = MAX_WAVE_ENEMIES.max(self.config.num_ai);
+        self.current_wave_size = (self.current_wave_size + 1).min(cap);
+        for _ in 0..self.current_wave_size {
+            let snake = self.spawn_ai_snake_mid_game();
+            self.snakes.push(snake);
+        }
+    }
+
+    /// Every 2nd body segment (1-based: indices 1, 3, 5, ...) becomes food.
+    fn convert_corpse_to_food(&mut self, index: usize) {
+        let snake = &self.snakes[index];
+        if snake.is_player {
+            return;
+        }
+        let drops: Vec<(i32, i32)> = snake.body.iter().skip(1).step_by(2).copied().collect();
+        self.food.extend(drops);
+    }
+
+    fn award_vanquish_score(&mut self, index: usize) {
+        if self.config.vanquish_score_percent == 0 || self.snakes[index].is_player {
+            return;
+        }
+        // u64 intermediate: score * percent could exceed u32 range for a
+        // long-enough-running, high-percent config.
+        let gained = ((self.snakes[index].score as u64 * self.config.vanquish_score_percent as u64)
+            / 100) as u32;
+        if let Some(player_idx) = self.player_index() {
+            self.snakes[player_idx].score += gained;
+        }
+        self.score += gained;
     }
 
     pub(crate) fn in_bounds(&self, pos: (i32, i32)) -> bool {
@@ -203,6 +271,7 @@ impl Game {
             score: 0,
             game_over: false,
             rng_state: seed | 1,
+            current_wave_size: config.num_ai,
         };
 
         let total = config.num_ai as usize + 1;
@@ -265,6 +334,8 @@ impl Game {
         if !self.is_safe(next, index) {
             self.snakes[index].alive = false;
             self.snakes[index].death_cause = Some(self.classify_collision(next, index));
+            self.convert_corpse_to_food(index);
+            self.award_vanquish_score(index);
             return;
         }
 
@@ -366,6 +437,13 @@ impl Game {
             }
         }
 
+        if self.config.wave_mode
+            && self.snakes.iter().any(|s| !s.is_player)
+            && self.snakes.iter().filter(|s| !s.is_player).all(|s| !s.alive)
+        {
+            self.advance_wave();
+        }
+
         if self
             .player_index()
             .map(|i| !self.snakes[i].alive)
@@ -403,6 +481,7 @@ impl Game {
             food: self.food.clone(),
             score: self.score,
             game_over: self.game_over,
+            wave: self.current_wave_size,
         };
         serde_wasm_bindgen::to_value(&state).unwrap_or(JsValue::NULL)
     }

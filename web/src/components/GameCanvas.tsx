@@ -1,9 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
 import ConfigPanel from "./ConfigPanel";
 import { useAudioEngine } from "@/hooks/useAudioEngine";
-import { pickTrackForPreset } from "@/lib/audio/tracks";
+import { EngineKind, pickTrackForPreset } from "@/lib/audio/audioEngine";
+import { AUDIO_PRESET_TRACKS } from "@/lib/audio/data/audioTracks";
+import { PRESET_TRACKS } from "@/lib/audio/tracks";
 import { CONFIG_PRESETS, TICK_MS_DEFAULT, type FullConfig } from "@/lib/gameConfig";
 import styles from "./GameCanvas.module.css";
 
@@ -15,7 +17,11 @@ const CANVAS_W = VIEWPORT_CELLS_W * CELL_SIZE;
 const CANVAS_H = VIEWPORT_CELLS_H * CELL_SIZE;
 
 const AI_COLORS = ["#3b82f6", "#f97316", "#a855f7", "#06b6d4", "#e879f9"];
-const AI_BOOSTED_BRIGHTEN = 0.5; // toward white, 0-1 — distinct from the player's flat color swap
+const AI_BOOST_TINT_AMOUNT = 1; // scales the additive bump below, 0-1
+// Additive R/G/B bump for a boosted AI's color — more red and green than
+// blue (a yellowish push) without blending toward a fixed color, so it
+// never matches the player's flat boosted color (#facc15) exactly.
+const AI_BOOST_TINT: [number, number, number] = [90, 90, 20];
 const DEATH_FADE_MS = 1000;
 const DEATH_COLOR = "#7f1d1d";
 const EAT_FLASH_MS = 500;
@@ -89,6 +95,8 @@ const FALLBACK_CONFIG: FullConfig = {
   boostedFoodScore: 25,
   minFood: 18,
   foodTargeting: "nearest_reachable",
+  waveMode: false,
+  vanquishScorePercent: 50,
   tickMs: TICK_MS_DEFAULT,
 };
 
@@ -148,6 +156,7 @@ interface SnakeDebugInfo {
 
 interface TestHooks {
   snakes: SnakeDebugInfo[];
+  wave: number;
 }
 
 declare global {
@@ -192,27 +201,28 @@ function deathEmoji(cause: DeathCause, theme: EmojiTheme): string {
   }
 }
 
-// Lightens a #rrggbb color toward white by `amount` (0-1) — used to make a
-// boosted AI's own color visibly brighter without losing its identity hue,
-// as opposed to the player's flat color swap when boosted.
-function brighten(hex: string, amount: number): string {
+// Nudges a #rrggbb color by additive [dR, dG, dB] (scaled by `amount`,
+// 0-1), clamped to a valid channel range — used to give a boosted AI's own
+// color a yellowish tint without losing its identity hue, as opposed to
+// the player's flat color swap when boosted.
+function tint(hex: string, delta: [number, number, number], amount: number): string {
   const n = parseInt(hex.slice(1), 16);
   const r = (n >> 16) & 0xff;
   const g = (n >> 8) & 0xff;
   const b = n & 0xff;
-  const lighten = (c: number) => Math.round(c + (255 - c) * amount);
-  return `rgb(${lighten(r)}, ${lighten(g)}, ${lighten(b)})`;
+  const bump = (c: number, d: number) => clamp(Math.round(c + d * amount), 0, 255);
+  return `rgb(${bump(r, delta[0])}, ${bump(g, delta[1])}, ${bump(b, delta[2])})`;
 }
 
-// AI keeps its identity hue but brightens toward white when boosted —
-// distinct from the player's flat color swap. Shared by the canvas
-// renderer and the debug DOM mirror so they can never disagree.
+// AI keeps its identity hue but tints yellow when boosted — distinct from
+// the player's flat color swap. Shared by the canvas renderer and the debug
+// DOM mirror so they can never disagree.
 function colorFor(snake: SnakeState, aiNumber: number | null): string {
   if (snake.is_player) {
     return snake.boosted ? "#facc15" : "#22c55e";
   }
   const base = AI_COLORS[((aiNumber ?? 1) - 1) % AI_COLORS.length];
-  return snake.boosted ? brighten(base, AI_BOOSTED_BRIGHTEN) : base;
+  return snake.boosted ? tint(base, AI_BOOST_TINT, AI_BOOST_TINT_AMOUNT) : base;
 }
 
 interface GameStateJson {
@@ -222,6 +232,7 @@ interface GameStateJson {
   food: Point[];
   score: number;
   game_over: boolean;
+  wave: number;
 }
 
 interface GameInstance {
@@ -307,10 +318,14 @@ function lerp(a: number, b: number, t: number) {
 // commits, so extrapolating past that point points the wrong way and then
 // has to jump-correct). Falls back to snapping when there's no matching
 // previous body (just spawned, or grew/shrank this tick).
-// prevSnake is always defined: prevState/currState always hold the same
-// number of snakes for a game's whole lifetime (fixed at construction).
-function interpolatedBody(prevSnake: SnakeState, snake: SnakeState, t: number): Point[] {
-  if (!prevSnake.alive) {
+// prevSnake is undefined for a snake that didn't exist last tick (wave
+// mode can append new AI mid-game) — treat that like "not alive yet".
+function interpolatedBody(
+  prevSnake: SnakeState | undefined,
+  snake: SnakeState,
+  t: number,
+): Point[] {
+  if (!prevSnake || !prevSnake.alive) {
     return snake.body;
   }
   const grew = snake.body.length - prevSnake.body.length;
@@ -357,13 +372,35 @@ function cellColor(x: number, y: number, width: number, height: number): string 
   return parity ? "#0d1424" : "#111c33";
 }
 
+// The checkerboard + border are a pure function of world size, fixed for a
+// game's whole lifetime — painting ~3,000 individual fillRect calls (plus a
+// fillStyle change per cell) every single animation frame was pure waste.
+// Rasterized once per startGame() into an offscreen canvas instead, then
+// blitted with a single drawImage() per frame (see render() below).
+function buildBackgroundCanvas(width: number, height: number): HTMLCanvasElement {
+  const canvas = document.createElement("canvas");
+  canvas.width = width * CELL_SIZE;
+  canvas.height = height * CELL_SIZE;
+  const ctx = canvas.getContext("2d")!;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      ctx.fillStyle = cellColor(x, y, width, height);
+      ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+    }
+  }
+  ctx.strokeStyle = "#f59e0b";
+  ctx.lineWidth = 3;
+  ctx.strokeRect(1, 1, width * CELL_SIZE - 2, height * CELL_SIZE - 2);
+  return canvas;
+}
+
 function drawHeadEmoji(
   ctx: CanvasRenderingContext2D,
   emoji: string,
   x: number,
   y: number,
 ) {
-  ctx.font = `${CELL_SIZE * 0.95}px sans-serif`;
+  ctx.font = `${CELL_SIZE * 1.1875}px sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(emoji, x * CELL_SIZE + CELL_SIZE / 2, y * CELL_SIZE + CELL_SIZE / 2 + 1);
@@ -371,6 +408,7 @@ function drawHeadEmoji(
 
 function render(
   ctx: CanvasRenderingContext2D,
+  background: HTMLCanvasElement,
   prevState: GameStateJson,
   currState: GameStateJson,
   deaths: (DeathInfo | null)[],
@@ -406,22 +444,10 @@ function render(
   ctx.save();
   ctx.translate(offsetX, offsetY);
 
-  // Only paint the checkerboard cells actually inside the viewport — the
-  // world can be far larger than what's on screen at once.
-  const minX = Math.max(0, Math.floor(camX - VIEWPORT_CELLS_W / 2) - 1);
-  const maxX = Math.min(currState.width - 1, Math.ceil(camX + VIEWPORT_CELLS_W / 2) + 1);
-  const minY = Math.max(0, Math.floor(camY - VIEWPORT_CELLS_H / 2) - 1);
-  const maxY = Math.min(currState.height - 1, Math.ceil(camY + VIEWPORT_CELLS_H / 2) + 1);
-  for (let y = minY; y <= maxY; y++) {
-    for (let x = minX; x <= maxX; x++) {
-      ctx.fillStyle = cellColor(x, y, currState.width, currState.height);
-      ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-    }
-  }
-
-  ctx.strokeStyle = "#f59e0b";
-  ctx.lineWidth = 3;
-  ctx.strokeRect(1, 1, currState.width * CELL_SIZE - 2, currState.height * CELL_SIZE - 2);
+  // Static checkerboard + border, pre-rasterized once in startGame() — the
+  // browser clips this to the visible canvas area, so it costs one blit
+  // regardless of how much larger the world is than the viewport.
+  ctx.drawImage(background, 0, 0);
 
   ctx.fillStyle = "#ef4444";
   for (const [x, y] of currState.food) {
@@ -498,6 +524,29 @@ interface GameCanvasProps {
   e2eDebug: boolean;
 }
 
+const MUTED_STORAGE_KEY = "snake-muted";
+const VOLUME_STORAGE_KEY = "snake-volume";
+const ENGINE_KIND_STORAGE_KEY = "snake-engine-kind";
+const DEFAULT_VOLUME = 0.8;
+
+function loadStoredMuted(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem(MUTED_STORAGE_KEY) === "1";
+}
+
+function loadStoredVolume(): number {
+  if (typeof window === "undefined") return DEFAULT_VOLUME;
+  const raw = window.localStorage.getItem(VOLUME_STORAGE_KEY);
+  if (raw === null) return DEFAULT_VOLUME;
+  const stored = Number(raw);
+  return Number.isFinite(stored) && stored >= 0 && stored <= 1 ? stored : DEFAULT_VOLUME;
+}
+
+function loadStoredEngineKind(): EngineKind {
+  if (typeof window === "undefined") return EngineKind.Midi;
+  return window.localStorage.getItem(ENGINE_KIND_STORAGE_KEY) === EngineKind.Audio ? EngineKind.Audio : EngineKind.Midi;
+}
+
 export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const gameRef = useRef<GameInstance | null>(null);
@@ -511,16 +560,51 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
   const ateRef = useRef<(number | null)[]>([]);
   const gameOverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const gamepadStateRef = useRef<boolean[]>([false, false, false, false]);
+  const backgroundRef = useRef<HTMLCanvasElement | null>(null);
 
   const [score, setScore] = useState(0);
   const [gameOver, setGameOver] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [started, setStarted] = useState(false);
   const [boosted, setBoosted] = useState(false);
   const [aiScores, setAiScores] = useState<AiScoreEntry[]>([]);
   const [config, setConfig] = useState<FullConfig>(FALLBACK_CONFIG);
   const [defaults, setDefaults] = useState<FullConfig>(FALLBACK_CONFIG);
   const [presetIndex, setPresetIndex] = useState(0);
-  const audio = useAudioEngine();
+  const [muted, setMuted] = useState(loadStoredMuted);
+  const [volume, setVolume] = useState(loadStoredVolume);
+  const [engineKind, setEngineKindState] = useState(loadStoredEngineKind);
+  const audio = useAudioEngine(engineKind);
+
+  const selectEngineKind = useCallback((kind: EngineKind) => {
+    setEngineKindState(kind);
+    window.localStorage.setItem(ENGINE_KIND_STORAGE_KEY, kind);
+  }, []);
+
+  // Applies whatever was persisted from a previous visit — safe to call
+  // before the engine has actually loaded (see getAudioEngine's proxy).
+  useEffect(() => {
+    audio.setMuted(muted);
+    audio.setVolume(volume);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const toggleMuted = useCallback(() => {
+    const next = !muted;
+    setMuted(next);
+    audio.setMuted(next);
+    window.localStorage.setItem(MUTED_STORAGE_KEY, next ? "1" : "0");
+  }, [muted, audio]);
+
+  const handleVolumeChange = useCallback(
+    (e: ChangeEvent<HTMLInputElement>) => {
+      const next = Number(e.target.value);
+      setVolume(next);
+      audio.setVolume(next);
+      window.localStorage.setItem(VOLUME_STORAGE_KEY, String(next));
+    },
+    [audio],
+  );
 
   // Takes the preset index explicitly rather than reading `presetIndex`
   // state: switchLevel() below calls setPresetIndex(next) and startGame(...)
@@ -530,7 +614,8 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
     const mod = moduleRef.current;
     if (!mod) return;
 
-    audio.startTrack(pickTrackForPreset(CONFIG_PRESETS[presetIdx].name));
+    const presetTracks = engineKind === EngineKind.Midi ? PRESET_TRACKS : AUDIO_PRESET_TRACKS;
+    audio.startTrack(pickTrackForPreset(presetTracks, CONFIG_PRESETS[presetIdx].name));
 
     if (intervalRef.current) clearInterval(intervalRef.current);
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
@@ -540,6 +625,7 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
 
     const game = new mod.Game(cfg);
     gameRef.current = game;
+    backgroundRef.current = buildBackgroundCanvas(cfg.width, cfg.height);
     const initial = game.state();
     prevStateRef.current = initial;
     currStateRef.current = initial;
@@ -551,7 +637,7 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
     setGameOver(false);
     setBoosted(false);
     setAiScores(topAiScores(initial.snakes));
-    if (e2eDebug) window.__testHooks = { snakes: snakeDebugInfo(initial.snakes) };
+    if (e2eDebug) window.__testHooks = { snakes: snakeDebugInfo(initial.snakes), wave: initial.wave };
 
     intervalRef.current = setInterval(() => {
       const g = gameRef.current;
@@ -585,7 +671,7 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
       setScore(g.score());
       setBoosted(nextState.snakes.find((s) => s.is_player)?.boosted ?? false);
       setAiScores(topAiScores(nextState.snakes));
-      if (e2eDebug) window.__testHooks = { snakes: snakeDebugInfo(nextState.snakes) };
+      if (e2eDebug) window.__testHooks = { snakes: snakeDebugInfo(nextState.snakes), wave: nextState.wave };
 
       // Delay the Game Over overlay so the death fade is actually visible
       // underneath it instead of being covered up the instant it starts.
@@ -607,9 +693,11 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
       const ctx = canvasRef.current?.getContext("2d");
       const prev = prevStateRef.current;
       const curr = currStateRef.current;
-      if (ctx && prev && curr) {
+      const background = backgroundRef.current;
+      if (ctx && prev && curr && background) {
         render(
           ctx,
+          background,
           prev,
           curr,
           deathsRef.current,
@@ -622,10 +710,11 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
       rafRef.current = requestAnimationFrame(frame);
     }
     rafRef.current = requestAnimationFrame(frame);
-  }, [e2eDebug, audio]);
+  }, [e2eDebug, audio, engineKind]);
 
   const switchLevel = useCallback(() => {
     audio.armAutoplay();
+    setStarted(true);
     const next = (presetIndex + 1) % CONFIG_PRESETS.length;
     setPresetIndex(next);
     startGame(CONFIG_PRESETS[next].config, next);
@@ -647,9 +736,10 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
       const fullDefaults: FullConfig = { ...engineDefaults, tickMs: TICK_MS_DEFAULT };
       setDefaults(fullDefaults);
       setLoading(false);
-      // Start on the first preset (not the raw engine defaults) so the
-      // "Level: X" label is accurate from the first frame.
-      startGame(CONFIG_PRESETS[0].config, 0);
+      // The game itself (and its audio track) doesn't start until the
+      // player clicks Play on the splash screen — see handlePlay below.
+      // Browsers refuse to start an AudioContext without a user gesture,
+      // so starting eagerly here would leave the music silently stuck.
     }
 
     load();
@@ -662,8 +752,15 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
       gameRef.current?.free();
       gameRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const handlePlay = useCallback(() => {
+    audio.armAutoplay();
+    setStarted(true);
+    // Start on the first preset (not the raw engine defaults) so the
+    // "Level: X" label is accurate from the first frame.
+    startGame(CONFIG_PRESETS[0].config, 0);
+  }, [startGame, audio]);
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -706,6 +803,30 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
           )}
         </div>
         {loading && <div className={styles.loadingOverlay}>Loading engine…</div>}
+        {!loading && !started && (
+          <div className={styles.splashOverlay}>
+            <p className={styles.splashTitle}>Chaos Snake</p>
+            <div className={styles.engineKindRow} role="radiogroup" aria-label="Music engine">
+              <button
+                onClick={() => selectEngineKind(EngineKind.Midi)}
+                aria-pressed={engineKind === EngineKind.Midi}
+                className={styles.engineKindButton}
+              >
+                MIDI
+              </button>
+              <button
+                onClick={() => selectEngineKind(EngineKind.Audio)}
+                aria-pressed={engineKind === EngineKind.Audio}
+                className={styles.engineKindButton}
+              >
+                Audio
+              </button>
+            </div>
+            <button onClick={handlePlay} className={styles.playButton}>
+              Play
+            </button>
+          </div>
+        )}
         {gameOver && !loading && (
           <div className={styles.gameOverOverlay}>
             <p className={styles.gameOverTitle}>Game Over</p>
@@ -721,6 +842,25 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
             </button>
           </div>
         )}
+        <div className={styles.audioControls}>
+          <button
+            onClick={toggleMuted}
+            className={styles.muteButton}
+            aria-label={muted ? "Unmute music" : "Mute music"}
+          >
+            {muted ? "🔇" : "🔊"}
+          </button>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            value={volume}
+            onChange={handleVolumeChange}
+            className={styles.volumeSlider}
+            aria-label="Music volume"
+          />
+        </div>
       </div>
       <div className={styles.levelRow}>
         <span>Level: {CONFIG_PRESETS[presetIndex].name}</span>
@@ -738,6 +878,7 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
         defaults={defaults}
         onApply={(cfg) => {
           audio.armAutoplay();
+          setStarted(true);
           startGame(cfg, presetIndex);
         }}
       />

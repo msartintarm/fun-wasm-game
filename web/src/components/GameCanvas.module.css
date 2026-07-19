@@ -39,6 +39,30 @@
 .restartButton {
   @apply mt-2 rounded-full bg-zinc-50 px-5 py-2 text-sm font-medium text-black hover:bg-zinc-200;
 }
+.splashOverlay {
+  @apply absolute inset-0 flex flex-col items-center justify-center gap-3 rounded-lg bg-black/80 text-zinc-100;
+}
+.splashTitle {
+  @apply text-2xl font-semibold;
+}
+.playButton {
+  @apply mt-2 rounded-full bg-zinc-50 px-6 py-2.5 text-base font-medium text-black hover:bg-zinc-200;
+}
+.engineKindRow {
+  @apply flex items-center gap-2;
+}
+.engineKindButton {
+  @apply rounded-full border border-zinc-600 bg-transparent px-4 py-1.5 text-sm font-medium text-zinc-300 hover:bg-white/10 aria-pressed:border-zinc-50 aria-pressed:text-zinc-50;
+}
 .description {
   @apply max-w-md text-center text-sm text-zinc-400;
+}
+.audioControls {
+  @apply absolute top-3 left-3 flex items-center gap-2;
+}
+.muteButton {
+  @apply flex h-8 w-8 items-center justify-center rounded-full bg-transparent text-lg hover:bg-white/10;
+}
+.volumeSlider {
+  @apply h-1 w-20 cursor-pointer accent-zinc-100;
 }

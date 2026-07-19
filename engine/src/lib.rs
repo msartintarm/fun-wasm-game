@@ -28,6 +28,8 @@ pub(crate) const SPEED_SEEKING_BOOST_BONUS: i32 = 500;
 /// to `i32`, so fractional differences from the boost multiplier survive
 /// truncation instead of collapsing distinct candidates to the same score.
 pub(crate) const SPEED_ESTIMATE_SCALE: f64 = 10.0;
+/// Ceiling on wave-mode escalation — see `Game::advance_wave`.
+pub(crate) const MAX_WAVE_ENEMIES: u32 = 12;
 
 pub use config::{Config, FoodTargeting};
 pub use game::{default_config, Game};

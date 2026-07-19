@@ -18,7 +18,7 @@ function collectConsoleErrors(page: Page): string[] {
   return errors;
 }
 
-test("loads the wasm engine and renders the game", async ({ page }) => {
+test("shows a splash screen and starts the game on Play", async ({ page }) => {
   const errors = collectConsoleErrors(page);
 
   await page.goto("/");
@@ -26,6 +26,10 @@ test("loads the wasm engine and renders the game", async ({ page }) => {
 
   const canvas = page.locator("canvas");
   await expect(canvas).toBeVisible();
+  await expect(page.getByRole("button", { name: "Play" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Play" }).click();
+  await expect(page.getByRole("button", { name: "Play" })).toBeHidden();
   await expect(page.getByText(/Score: \d+/)).toBeVisible();
 
   await page.screenshot({ path: "test-results/screenshots/game-loaded.png" });
@@ -38,6 +42,7 @@ test("responds to keyboard input without erroring", async ({ page }) => {
 
   await page.goto("/");
   await expect(page.getByText("Loading engine…")).toBeHidden({ timeout: 15_000 });
+  await page.getByRole("button", { name: "Play" }).click();
   await page.locator("canvas").click();
   await page.keyboard.press("ArrowDown");
 
@@ -58,6 +63,7 @@ test("responds to keyboard input without erroring", async ({ page }) => {
 test("shows game over on wall collision and restarts", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByText("Loading engine…")).toBeHidden({ timeout: 15_000 });
+  await page.getByRole("button", { name: "Play" }).click();
 
   // With no steering input the player keeps its default rightward heading
   // and eventually runs into the world's east wall — a deterministic way to
@@ -80,8 +86,11 @@ test("window.__testHooks reflects the devil (AI 1) and cat (AI 2) theme assignme
 }) => {
   await page.goto("/");
   await expect(page.getByText("Loading engine…")).toBeHidden({ timeout: 15_000 });
-  // Chaos Arena (the default level) has 30 AI, so both AI Snake 1 and
-  // AI Snake 2 already exist without switching levels.
+  await page.getByRole("button", { name: "Play" }).click();
+  // Duel (the default level) only has 1 AI — switch to Chaos Arena, which
+  // has 30, so both AI Snake 1 and AI Snake 2 are guaranteed to exist.
+  await page.getByRole("button", { name: "Switch Level" }).click(); // Duel -> Chaos Arena
+  await expect(page.getByText("Level: Chaos Arena")).toBeVisible();
 
   await page.waitForFunction(() => (window.__testHooks?.snakes.length ?? 0) > 0);
   const hooks = await page.evaluate(() => window.__testHooks);
@@ -90,4 +99,23 @@ test("window.__testHooks reflects the devil (AI 1) and cat (AI 2) theme assignme
   expect(themes).toContain("devil");
   expect(themes).toContain("cat");
   expect(hooks?.snakes.some((s) => s.isPlayer)).toBe(true);
+});
+
+// Wave-clear/escalation/cap and food-conversion logic is covered
+// deterministically in the Rust test suite (engine/src/tests.rs), which can
+// kill AI directly instead of waiting on real gameplay. This is just a
+// wiring smoke test: does the Duel preset actually reach the browser with
+// wave mode on and wave 1 sized correctly.
+test("wave mode starts at wave 1 on the Duel preset", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByText("Loading engine…")).toBeHidden({ timeout: 15_000 });
+  await page.getByRole("button", { name: "Play" }).click();
+  // Duel is the default level, so no level switch needed.
+  await expect(page.getByText("Level: Duel")).toBeVisible();
+
+  await page.waitForFunction(() => (window.__testHooks?.snakes.length ?? 0) > 0);
+  const hooks = await page.evaluate(() => window.__testHooks);
+
+  expect(hooks?.wave).toBe(1);
+  expect(hooks?.snakes.filter((s) => !s.isPlayer)).toHaveLength(1);
 });
