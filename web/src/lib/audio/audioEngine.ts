@@ -15,8 +15,14 @@ export enum AudioCommandType {
   StartTrack = "startTrack",
   StopTrack = "stopTrack",
   TriggerPickup = "triggerPickup",
-  SetMuted = "setMuted",
-  SetVolume = "setVolume",
+  // Music and sound-effect volume/mute are independent channels (see
+  // mixer.ts) — both engines route their background track/synth through
+  // musicBus and their pickup sound through effectsBus, so these four
+  // commands act on genuinely separate buses, not a shared master fader.
+  SetMusicMuted = "setMusicMuted",
+  SetMusicVolume = "setMusicVolume",
+  SetEffectsMuted = "setEffectsMuted",
+  SetEffectsVolume = "setEffectsVolume",
   SetBoosted = "setBoosted",
 }
 
@@ -25,8 +31,10 @@ export type AudioCommand =
   | { type: AudioCommandType.StartTrack; id: MusicTrackId | undefined }
   | { type: AudioCommandType.StopTrack }
   | { type: AudioCommandType.TriggerPickup }
-  | { type: AudioCommandType.SetMuted; muted: boolean }
-  | { type: AudioCommandType.SetVolume; volume: number }
+  | { type: AudioCommandType.SetMusicMuted; muted: boolean }
+  | { type: AudioCommandType.SetMusicVolume; volume: number }
+  | { type: AudioCommandType.SetEffectsMuted; muted: boolean }
+  | { type: AudioCommandType.SetEffectsVolume; volume: number }
   // Reflects the player's current "speed mode" (boosted) state — only
   // audioFileEngine.ts acts on it (fades condition-gated layers in/out);
   // midiEngine.ts has no layers, so it's a no-op there. Still a required

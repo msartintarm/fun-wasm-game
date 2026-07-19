@@ -2,6 +2,7 @@ import { Midi } from "@tonejs/midi";
 import * as Tone from "tone";
 
 import { activeChordAt, loopDurationSeconds } from "./chordTimeline";
+import { effectsBus, musicBus, setEffectsMuted, setEffectsVolume, setMusicMuted, setMusicVolume } from "./mixer";
 import { pickPickupNote } from "./noteSelection";
 import { TRACKS, trackAssetUrl, type MusicTrackId } from "./tracks";
 import { assertNever, AudioCommandType, type AudioEngine } from "./audioEngine";
@@ -22,10 +23,10 @@ function loadMidi(id: MusicTrackId): Promise<Midi> {
 export function createEngine(): AudioEngine {
   const backgroundSynth = new Tone.PolySynth(Tone.Synth, {
     envelope: { attack: 0.02, decay: 0.3, sustain: 0.4, release: 0.5 },
-  }).toDestination();
+  }).connect(musicBus);
   const pickupSynth = new Tone.PolySynth(Tone.Synth, {
     envelope: { attack: 0.005, decay: 0.2, sustain: 0, release: 0.2 },
-  }).toDestination();
+  }).connect(effectsBus);
 
   // Set only once Tone.start() has genuinely resolved — never eagerly, so
   // nothing can call Tone.Transport.start() while the AudioContext is
@@ -134,14 +135,6 @@ export function createEngine(): AudioEngine {
     pickupSynth.triggerAttackRelease(freq, "8n");
   }
 
-  function setMuted(muted: boolean) {
-    Tone.getDestination().mute = muted;
-  }
-
-  function setVolume(volume: number) {
-    Tone.getDestination().volume.value = Tone.gainToDb(Math.max(0, Math.min(1, volume)));
-  }
-
   return (command) => {
     switch (command.type) {
       case AudioCommandType.Resume:
@@ -152,10 +145,14 @@ export function createEngine(): AudioEngine {
         return stopTrack();
       case AudioCommandType.TriggerPickup:
         return triggerPickup();
-      case AudioCommandType.SetMuted:
-        return setMuted(command.muted);
-      case AudioCommandType.SetVolume:
-        return setVolume(command.volume);
+      case AudioCommandType.SetMusicMuted:
+        return setMusicMuted(command.muted);
+      case AudioCommandType.SetMusicVolume:
+        return setMusicVolume(command.volume);
+      case AudioCommandType.SetEffectsMuted:
+        return setEffectsMuted(command.muted);
+      case AudioCommandType.SetEffectsVolume:
+        return setEffectsVolume(command.volume);
       case AudioCommandType.SetBoosted:
         return; // no layers to fade — MIDI tracks don't support them
       default:

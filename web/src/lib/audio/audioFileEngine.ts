@@ -3,14 +3,27 @@ import * as Tone from "tone";
 import { audioAssetUrl } from "./assetUrl";
 import { activeChordAt } from "./chordTimeline";
 import { AUDIO_TRACKS } from "./data/audioTracks";
+import type { TrackLayer } from "./data/tracks";
+import { layerShouldBeAudible } from "./layerLogic";
+import { effectsBus, musicBus, setEffectsMuted, setEffectsVolume, setMusicMuted, setMusicVolume } from "./mixer";
 import { pickPickupNote } from "./noteSelection";
 import type { MusicTrackId } from "./tracks";
 import { assertNever, AudioCommandType, type AudioEngine } from "./audioEngine";
 
+// How long a layer takes to fade in/out when the player's boosted state
+// changes — long enough to read as a musical swell, short enough to feel
+// responsive to a boost that might only last a couple seconds.
+const LAYER_FADE_SECONDS = 0.5;
+
+interface ActiveLayer {
+  layer: TrackLayer;
+  player: Tone.Player;
+}
+
 export function createEngine(): AudioEngine {
   const pickupSynth = new Tone.PolySynth(Tone.Synth, {
     envelope: { attack: 0.005, decay: 0.2, sustain: 0, release: 0.2 },
-  }).toDestination();
+  }).connect(effectsBus);
 
   // Same pattern as midiEngine.ts throughout — see its comments for the
   // reasoning (gesture-gated resume, pending-track replay, generation
@@ -18,15 +31,34 @@ export function createEngine(): AudioEngine {
   let contextStarted: Promise<void> | null = null;
   let pendingTrackId: MusicTrackId | undefined;
   let hasPendingTrackRequest = false;
-  let currentPlayer: Tone.Player | null = null;
+  let currentBasePlayer: Tone.Player | null = null;
+  let currentLayers: ActiveLayer[] = [];
   let currentTrackId: MusicTrackId | undefined;
   let trackStartedAt = 0;
   let requestGeneration = 0;
+  let boosted = false;
 
-  function stopCurrentPlayer() {
-    currentPlayer?.dispose();
-    currentPlayer = null;
+  function stopCurrentPlayers() {
+    currentBasePlayer?.dispose();
+    currentBasePlayer = null;
+    currentLayers.forEach(({ player }) => player.dispose());
+    currentLayers = [];
     currentTrackId = undefined;
+  }
+
+  // rampSeconds === 0 sets volume instantly (establishing initial state
+  // right after a track starts) — otherwise ramps smoothly (a runtime
+  // boosted-state transition).
+  function applyLayerVolumes(rampSeconds: number) {
+    for (const { layer, player } of currentLayers) {
+      const audible = layerShouldBeAudible(layer.condition, boosted);
+      const targetDb = audible ? 0 : -Infinity;
+      if (rampSeconds > 0) {
+        player.volume.rampTo(targetDb, rampSeconds);
+      } else {
+        player.volume.value = targetDb;
+      }
+    }
   }
 
   function reallyStartTrack(id: MusicTrackId) {
@@ -34,25 +66,45 @@ export function createEngine(): AudioEngine {
     if (!track) return;
 
     const myGeneration = requestGeneration;
-    const player = new Tone.Player({
-      url: audioAssetUrl(track.assetPath),
-      loop: true,
-      onload: () => {
+    const basePlayer = new Tone.Player({ loop: true }).connect(musicBus);
+    const layerEntries: ActiveLayer[] = (track.layers ?? []).map((layer) => ({
+      layer,
+      player: new Tone.Player({ loop: true }).connect(musicBus),
+    }));
+
+    // Every player (base + layers) must finish loading before any of them
+    // starts — independent network/decode timing per file would otherwise
+    // start them at slightly different moments, audibly drifting a
+    // rhythmically-locked layer out of sync with the base over a
+    // multi-minute loop. Starting them all at one shared Tone.now()
+    // timestamp keeps them sample-accurate regardless of how long each
+    // individually took to load.
+    Promise.all([
+      basePlayer.load(audioAssetUrl(track.assetPath)),
+      ...layerEntries.map(({ layer, player }) => player.load(audioAssetUrl(layer.assetPath))),
+    ])
+      .then(() => {
         // A newer startTrack/stopTrack call landed while this was in
         // flight — don't resurrect a stale track.
         if (myGeneration !== requestGeneration) {
-          player.dispose();
+          basePlayer.dispose();
+          layerEntries.forEach(({ player }) => player.dispose());
           return;
         }
-        player.start();
-        currentPlayer = player;
+
+        const startTime = Tone.now();
+        basePlayer.start(startTime);
+        layerEntries.forEach(({ player }) => player.start(startTime));
+
+        currentBasePlayer = basePlayer;
+        currentLayers = layerEntries;
         currentTrackId = id;
         trackStartedAt = performance.now();
-      },
-      onerror: (err) => {
+        applyLayerVolumes(0);
+      })
+      .catch((err) => {
         console.warn(`Failed to load audio track "${id}"; continuing without it.`, err);
-      },
-    }).toDestination();
+      });
   }
 
   function flushPendingTrack() {
@@ -77,7 +129,7 @@ export function createEngine(): AudioEngine {
 
   function startTrack(id: MusicTrackId | undefined) {
     requestGeneration += 1;
-    stopCurrentPlayer();
+    stopCurrentPlayers();
     pendingTrackId = id;
     hasPendingTrackRequest = id !== undefined;
     if (!hasPendingTrackRequest) return;
@@ -87,7 +139,7 @@ export function createEngine(): AudioEngine {
   function stopTrack() {
     requestGeneration += 1;
     hasPendingTrackRequest = false;
-    stopCurrentPlayer();
+    stopCurrentPlayers();
   }
 
   function triggerPickup() {
@@ -104,12 +156,10 @@ export function createEngine(): AudioEngine {
     pickupSynth.triggerAttackRelease(freq, "8n");
   }
 
-  function setMuted(muted: boolean) {
-    Tone.getDestination().mute = muted;
-  }
-
-  function setVolume(volume: number) {
-    Tone.getDestination().volume.value = Tone.gainToDb(Math.max(0, Math.min(1, volume)));
+  function setBoosted(nextBoosted: boolean) {
+    if (nextBoosted === boosted) return;
+    boosted = nextBoosted;
+    applyLayerVolumes(LAYER_FADE_SECONDS);
   }
 
   return (command) => {
@@ -122,10 +172,16 @@ export function createEngine(): AudioEngine {
         return stopTrack();
       case AudioCommandType.TriggerPickup:
         return triggerPickup();
-      case AudioCommandType.SetMuted:
-        return setMuted(command.muted);
-      case AudioCommandType.SetVolume:
-        return setVolume(command.volume);
+      case AudioCommandType.SetMusicMuted:
+        return setMusicMuted(command.muted);
+      case AudioCommandType.SetMusicVolume:
+        return setMusicVolume(command.volume);
+      case AudioCommandType.SetEffectsMuted:
+        return setEffectsMuted(command.muted);
+      case AudioCommandType.SetEffectsVolume:
+        return setEffectsVolume(command.volume);
+      case AudioCommandType.SetBoosted:
+        return setBoosted(command.boosted);
       default:
         return assertNever(command);
     }

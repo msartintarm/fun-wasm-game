@@ -5,7 +5,7 @@ import ConfigPanel from "./ConfigPanel";
 import { useAudioEngine } from "@/hooks/useAudioEngine";
 import { EngineKind, pickTrackForPreset } from "@/lib/audio/audioEngine";
 import { AUDIO_PRESET_TRACKS } from "@/lib/audio/data/audioTracks";
-import { PRESET_TRACKS } from "@/lib/audio/tracks";
+import { PRESET_TRACKS, type MusicTrackId } from "@/lib/audio/tracks";
 import { CONFIG_PRESETS, TICK_MS_DEFAULT, type FullConfig } from "@/lib/gameConfig";
 import styles from "./GameCanvas.module.css";
 
@@ -524,22 +524,64 @@ interface GameCanvasProps {
   e2eDebug: boolean;
 }
 
-const MUTED_STORAGE_KEY = "snake-muted";
-const VOLUME_STORAGE_KEY = "snake-volume";
+const MUSIC_MUTED_STORAGE_KEY = "snake-music-muted";
+const MUSIC_VOLUME_STORAGE_KEY = "snake-music-volume";
+const EFFECTS_MUTED_STORAGE_KEY = "snake-effects-muted";
+const EFFECTS_VOLUME_STORAGE_KEY = "snake-effects-volume";
 const ENGINE_KIND_STORAGE_KEY = "snake-engine-kind";
 const DEFAULT_VOLUME = 0.8;
 
-function loadStoredMuted(): boolean {
+function loadStoredMuted(key: string): boolean {
   if (typeof window === "undefined") return false;
-  return window.localStorage.getItem(MUTED_STORAGE_KEY) === "1";
+  return window.localStorage.getItem(key) === "1";
 }
 
-function loadStoredVolume(): number {
+function loadStoredVolume(key: string): number {
   if (typeof window === "undefined") return DEFAULT_VOLUME;
-  const raw = window.localStorage.getItem(VOLUME_STORAGE_KEY);
+  const raw = window.localStorage.getItem(key);
   if (raw === null) return DEFAULT_VOLUME;
   const stored = Number(raw);
   return Number.isFinite(stored) && stored >= 0 && stored <= 1 ? stored : DEFAULT_VOLUME;
+}
+
+// One mute+volume channel's state/persistence/handlers — used twice below
+// (music, effects), each wired to its own storage keys and its own pair of
+// audio-controller setters, so the two channels are genuinely independent.
+function useChannelControl(
+  mutedKey: string,
+  volumeKey: string,
+  setEngineMuted: (muted: boolean) => void,
+  setEngineVolume: (volume: number) => void,
+) {
+  const [muted, setMutedState] = useState(() => loadStoredMuted(mutedKey));
+  const [volume, setVolumeState] = useState(() => loadStoredVolume(volumeKey));
+
+  // Applies whatever was persisted from a previous visit — safe to call
+  // before the engine has actually loaded (see getAudioEngine's proxy).
+  useEffect(() => {
+    setEngineMuted(muted);
+    setEngineVolume(volume);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const toggleMuted = useCallback(() => {
+    const next = !muted;
+    setMutedState(next);
+    setEngineMuted(next);
+    window.localStorage.setItem(mutedKey, next ? "1" : "0");
+  }, [muted, setEngineMuted, mutedKey]);
+
+  const handleVolumeChange = useCallback(
+    (e: ChangeEvent<HTMLInputElement>) => {
+      const next = Number(e.target.value);
+      setVolumeState(next);
+      setEngineVolume(next);
+      window.localStorage.setItem(volumeKey, String(next));
+    },
+    [setEngineVolume, volumeKey],
+  );
+
+  return { muted, volume, toggleMuted, handleVolumeChange };
 }
 
 function loadStoredEngineKind(): EngineKind {
@@ -561,6 +603,11 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
   const gameOverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const gamepadStateRef = useRef<boolean[]>([false, false, false, false]);
   const backgroundRef = useRef<HTMLCanvasElement | null>(null);
+  // Whatever track id the audio engine currently has loaded — startGame()
+  // compares against this so a restart (game over -> Restart/'r', or
+  // reapplying config for the same preset) doesn't interrupt/replay a
+  // track that's already playing; only a genuine track change restarts it.
+  const currentAudioTrackIdRef = useRef<MusicTrackId | undefined>(undefined);
 
   const [score, setScore] = useState(0);
   const [gameOver, setGameOver] = useState(false);
@@ -571,40 +618,33 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
   const [config, setConfig] = useState<FullConfig>(FALLBACK_CONFIG);
   const [defaults, setDefaults] = useState<FullConfig>(FALLBACK_CONFIG);
   const [presetIndex, setPresetIndex] = useState(0);
-  const [muted, setMuted] = useState(loadStoredMuted);
-  const [volume, setVolume] = useState(loadStoredVolume);
   const [engineKind, setEngineKindState] = useState(loadStoredEngineKind);
   const audio = useAudioEngine(engineKind);
+
+  const music = useChannelControl(
+    MUSIC_MUTED_STORAGE_KEY,
+    MUSIC_VOLUME_STORAGE_KEY,
+    audio.setMusicMuted,
+    audio.setMusicVolume,
+  );
+  const effects = useChannelControl(
+    EFFECTS_MUTED_STORAGE_KEY,
+    EFFECTS_VOLUME_STORAGE_KEY,
+    audio.setEffectsMuted,
+    audio.setEffectsVolume,
+  );
 
   const selectEngineKind = useCallback((kind: EngineKind) => {
     setEngineKindState(kind);
     window.localStorage.setItem(ENGINE_KIND_STORAGE_KEY, kind);
   }, []);
 
-  // Applies whatever was persisted from a previous visit — safe to call
-  // before the engine has actually loaded (see getAudioEngine's proxy).
+  // Reflects "speed mode" (boosted) to the audio engine — audioFileEngine.ts
+  // fades condition-gated layers (e.g. the guitar stem) in/out in response;
+  // midiEngine.ts has no layers, so this is a no-op there.
   useEffect(() => {
-    audio.setMuted(muted);
-    audio.setVolume(volume);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const toggleMuted = useCallback(() => {
-    const next = !muted;
-    setMuted(next);
-    audio.setMuted(next);
-    window.localStorage.setItem(MUTED_STORAGE_KEY, next ? "1" : "0");
-  }, [muted, audio]);
-
-  const handleVolumeChange = useCallback(
-    (e: ChangeEvent<HTMLInputElement>) => {
-      const next = Number(e.target.value);
-      setVolume(next);
-      audio.setVolume(next);
-      window.localStorage.setItem(VOLUME_STORAGE_KEY, String(next));
-    },
-    [audio],
-  );
+    audio.setBoosted(boosted);
+  }, [boosted, audio]);
 
   // Takes the preset index explicitly rather than reading `presetIndex`
   // state: switchLevel() below calls setPresetIndex(next) and startGame(...)
@@ -615,7 +655,14 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
     if (!mod) return;
 
     const presetTracks = engineKind === EngineKind.Midi ? PRESET_TRACKS : AUDIO_PRESET_TRACKS;
-    audio.startTrack(pickTrackForPreset(presetTracks, CONFIG_PRESETS[presetIdx].name));
+    const nextTrackId = pickTrackForPreset(presetTracks, CONFIG_PRESETS[presetIdx].name);
+    // Only (re)start audio when the track identity actually changes — a
+    // restart (game over -> Restart/'r') or reapplying config for the same
+    // preset must not interrupt/replay a track that's already looping.
+    if (nextTrackId !== currentAudioTrackIdRef.current) {
+      currentAudioTrackIdRef.current = nextTrackId;
+      audio.startTrack(nextTrackId);
+    }
 
     if (intervalRef.current) clearInterval(intervalRef.current);
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
@@ -843,23 +890,44 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
           </div>
         )}
         <div className={styles.audioControls}>
-          <button
-            onClick={toggleMuted}
-            className={styles.muteButton}
-            aria-label={muted ? "Unmute music" : "Mute music"}
-          >
-            {muted ? "🔇" : "🔊"}
-          </button>
-          <input
-            type="range"
-            min={0}
-            max={1}
-            step={0.01}
-            value={volume}
-            onChange={handleVolumeChange}
-            className={styles.volumeSlider}
-            aria-label="Music volume"
-          />
+          <div className={styles.audioChannelRow}>
+            <button
+              onClick={music.toggleMuted}
+              className={styles.muteButton}
+              aria-label={music.muted ? "Unmute music" : "Mute music"}
+            >
+              {music.muted ? "🔇" : "🎵"}
+            </button>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.01}
+              value={music.volume}
+              onChange={music.handleVolumeChange}
+              className={styles.volumeSlider}
+              aria-label="Music volume"
+            />
+          </div>
+          <div className={styles.audioChannelRow}>
+            <button
+              onClick={effects.toggleMuted}
+              className={styles.muteButton}
+              aria-label={effects.muted ? "Unmute sound effects" : "Mute sound effects"}
+            >
+              {effects.muted ? "🔇" : "🔔"}
+            </button>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.01}
+              value={effects.volume}
+              onChange={effects.handleVolumeChange}
+              className={styles.volumeSlider}
+              aria-label="Sound effects volume"
+            />
+          </div>
         </div>
       </div>
       <div className={styles.levelRow}>

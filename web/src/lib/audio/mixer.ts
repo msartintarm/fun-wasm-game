@@ -1,0 +1,28 @@
+import * as Tone from "tone";
+
+// Two independent buses so music and sound-effect volume/mute are
+// controllable separately — both engines route their background
+// track/synth through musicBus and their pickup sound through
+// effectsBus instead of straight to the master destination. Module-level
+// singletons: whichever engine module (midiEngine.ts / audioFileEngine.ts)
+// gets dynamically imported first, both end up importing this exact same
+// cached module instance, so the two buses are genuinely shared state
+// regardless of which EngineKind is active.
+export const musicBus = new Tone.Volume(0).toDestination();
+export const effectsBus = new Tone.Volume(0).toDestination();
+
+export function setMusicVolume(volume: number) {
+  musicBus.volume.value = Tone.gainToDb(Math.max(0, Math.min(1, volume)));
+}
+
+export function setMusicMuted(muted: boolean) {
+  musicBus.mute = muted;
+}
+
+export function setEffectsVolume(volume: number) {
+  effectsBus.volume.value = Tone.gainToDb(Math.max(0, Math.min(1, volume)));
+}
+
+export function setEffectsMuted(muted: boolean) {
+  effectsBus.mute = muted;
+}

@@ -58,7 +58,10 @@
   @apply max-w-md text-center text-sm text-zinc-400;
 }
 .audioControls {
-  @apply absolute top-3 left-3 flex items-center gap-2;
+  @apply absolute top-3 left-3 flex flex-col gap-1.5;
+}
+.audioChannelRow {
+  @apply flex items-center gap-2;
 }
 .muteButton {
   @apply flex h-8 w-8 items-center justify-center rounded-full bg-transparent text-lg hover:bg-white/10;

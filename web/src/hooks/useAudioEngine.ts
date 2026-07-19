@@ -9,8 +9,11 @@ export interface AudioController {
   startTrack: (id: MusicTrackId | undefined) => void;
   stopTrack: () => void;
   triggerPickup: () => void;
-  setMuted: (muted: boolean) => void;
-  setVolume: (volume: number) => void;
+  setMusicMuted: (muted: boolean) => void;
+  setMusicVolume: (volume: number) => void;
+  setEffectsMuted: (muted: boolean) => void;
+  setEffectsVolume: (volume: number) => void;
+  setBoosted: (boosted: boolean) => void;
 }
 
 // Thin, stable wrapper over the AudioEngine singleton — GameCanvas depends
@@ -29,8 +32,26 @@ export function useAudioEngine(kind: EngineKind): AudioController {
   );
   const stopTrack = useCallback(() => dispatch({ type: AudioCommandType.StopTrack }), [dispatch]);
   const triggerPickup = useCallback(() => dispatch({ type: AudioCommandType.TriggerPickup }), [dispatch]);
-  const setMuted = useCallback((muted: boolean) => dispatch({ type: AudioCommandType.SetMuted, muted }), [dispatch]);
-  const setVolume = useCallback((volume: number) => dispatch({ type: AudioCommandType.SetVolume, volume }), [dispatch]);
+  const setMusicMuted = useCallback(
+    (muted: boolean) => dispatch({ type: AudioCommandType.SetMusicMuted, muted }),
+    [dispatch],
+  );
+  const setMusicVolume = useCallback(
+    (volume: number) => dispatch({ type: AudioCommandType.SetMusicVolume, volume }),
+    [dispatch],
+  );
+  const setEffectsMuted = useCallback(
+    (muted: boolean) => dispatch({ type: AudioCommandType.SetEffectsMuted, muted }),
+    [dispatch],
+  );
+  const setEffectsVolume = useCallback(
+    (volume: number) => dispatch({ type: AudioCommandType.SetEffectsVolume, volume }),
+    [dispatch],
+  );
+  const setBoosted = useCallback(
+    (boosted: boolean) => dispatch({ type: AudioCommandType.SetBoosted, boosted }),
+    [dispatch],
+  );
 
   useEffect(() => {
     return () => stopTrack();
@@ -44,7 +65,17 @@ export function useAudioEngine(kind: EngineKind): AudioController {
   // identity when `kind` changes, which is correct — a different engine
   // kind really is a different controller.
   return useMemo(
-    () => ({ armAutoplay, startTrack, stopTrack, triggerPickup, setMuted, setVolume }),
-    [armAutoplay, startTrack, stopTrack, triggerPickup, setMuted, setVolume],
+    () => ({
+      armAutoplay,
+      startTrack,
+      stopTrack,
+      triggerPickup,
+      setMusicMuted,
+      setMusicVolume,
+      setEffectsMuted,
+      setEffectsVolume,
+      setBoosted,
+    }),
+    [armAutoplay, startTrack, stopTrack, triggerPickup, setMusicMuted, setMusicVolume, setEffectsMuted, setEffectsVolume, setBoosted],
   );
 }
