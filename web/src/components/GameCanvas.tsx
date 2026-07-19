@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import ConfigPanel from "./ConfigPanel";
+import { useAudioEngine } from "@/hooks/useAudioEngine";
+import { pickTrackForPreset } from "@/lib/audio/tracks";
 import { CONFIG_PRESETS, TICK_MS_DEFAULT, type FullConfig } from "@/lib/gameConfig";
 import styles from "./GameCanvas.module.css";
 
@@ -518,10 +520,17 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
   const [config, setConfig] = useState<FullConfig>(FALLBACK_CONFIG);
   const [defaults, setDefaults] = useState<FullConfig>(FALLBACK_CONFIG);
   const [presetIndex, setPresetIndex] = useState(0);
+  const audio = useAudioEngine();
 
-  const startGame = useCallback((cfg: FullConfig) => {
+  // Takes the preset index explicitly rather than reading `presetIndex`
+  // state: switchLevel() below calls setPresetIndex(next) and startGame(...)
+  // in the same tick, before React re-renders, so the state closure here
+  // would still see the old value.
+  const startGame = useCallback((cfg: FullConfig, presetIdx: number) => {
     const mod = moduleRef.current;
     if (!mod) return;
+
+    audio.startTrack(pickTrackForPreset(CONFIG_PRESETS[presetIdx].name));
 
     if (intervalRef.current) clearInterval(intervalRef.current);
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
@@ -567,6 +576,7 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
         }
         if (prevSnake && s.body.length > prevSnake.body.length) {
           ateAt[i] = now;
+          if (s.is_player) audio.triggerPickup();
         }
       });
       prevStateRef.current = prevState;
@@ -612,13 +622,14 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
       rafRef.current = requestAnimationFrame(frame);
     }
     rafRef.current = requestAnimationFrame(frame);
-  }, [e2eDebug]);
+  }, [e2eDebug, audio]);
 
   const switchLevel = useCallback(() => {
+    audio.armAutoplay();
     const next = (presetIndex + 1) % CONFIG_PRESETS.length;
     setPresetIndex(next);
-    startGame(CONFIG_PRESETS[next].config);
-  }, [presetIndex, startGame]);
+    startGame(CONFIG_PRESETS[next].config, next);
+  }, [presetIndex, startGame, audio]);
 
   useEffect(() => {
     let cancelled = false;
@@ -638,7 +649,7 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
       setLoading(false);
       // Start on the first preset (not the raw engine defaults) so the
       // "Level: X" label is accurate from the first frame.
-      startGame(CONFIG_PRESETS[0].config);
+      startGame(CONFIG_PRESETS[0].config, 0);
     }
 
     load();
@@ -658,16 +669,17 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
     function onKeyDown(e: KeyboardEvent) {
       const dir = KEY_TO_DIR[e.key];
       if (dir === undefined) return;
+      audio.armAutoplay();
       e.preventDefault();
       if (gameOver) {
-        if (e.key === "r" || e.key === "R") startGame(config);
+        if (e.key === "r" || e.key === "R") startGame(config, presetIndex);
         return;
       }
       gameRef.current?.set_player_direction(dir);
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [gameOver, startGame, config]);
+  }, [gameOver, startGame, config, presetIndex, audio]);
 
   return (
     <div className={styles.wrapper}>
@@ -698,7 +710,13 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
           <div className={styles.gameOverOverlay}>
             <p className={styles.gameOverTitle}>Game Over</p>
             <p>Final score: {score}</p>
-            <button onClick={() => startGame(config)} className={styles.restartButton}>
+            <button
+              onClick={() => {
+                audio.armAutoplay();
+                startGame(config, presetIndex);
+              }}
+              className={styles.restartButton}
+            >
               Restart (R)
             </button>
           </div>
@@ -715,7 +733,14 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
         hug the arena&apos;s edge to speed up — proximity and food also
         score points. But don&apos;t crash.
       </p>
-      <ConfigPanel config={config} defaults={defaults} onApply={startGame} />
+      <ConfigPanel
+        config={config}
+        defaults={defaults}
+        onApply={(cfg) => {
+          audio.armAutoplay();
+          startGame(cfg, presetIndex);
+        }}
+      />
     </div>
   );
 }

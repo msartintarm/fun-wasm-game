@@ -1,18 +1,27 @@
-claude -p "for context upon your current task you are constructing an allowlist of allowed commands. This is how we got here: I prompted you '
+# Context for a new session
 
+This repo has grown well past its original spec (below). **`README.md` is
+the current, authoritative architecture/state reference — read that first,
+not this file.**
 
-1.
+## Before you start
 
-Create a website with next.js which contains a game that is rendered with Web Assembly using Rust as the source language. The game should be a multiplayer version of Snake with the human controlling one snake and the AI controlling the other snakes. When close to the other snakes, you move faster and score more points. 
+- `.claude/settings.json` already allowlists autonomous npm/cargo/rustc/
+  wasm-pack/etc. — no need to rebuild it.
+- Check `~/.claude/projects/-home-mst-Projects-gamez-fun-wasm-game/memory/`
+  (`MEMORY.md` is the index) for standing feedback from past sessions
+  before making changes — e.g. use `Edit`, never `cat >>`; never
+  `rm -rf .next`; stop after ~2 timeouts on a slow/hanging test instead of
+  retrying it.
+- `npm run test:e2e` (Playwright) has been unreliable in this environment
+  since Tone.js was added — hangs past 120s with no output. Don't loop
+  retrying it; verify with `tsc`/`eslint`/`cargo test`/`npm run test:unit`
+  instead and say so if E2E coverage is genuinely needed.
 
-2. Prerequisite:
+## Original spec (superseded by everything in README.md — kept for history only)
 
-WIth -p mode, you hit repeated permission denials on npm, rustc, cargo, and wasm-pack version checks, so you must first create an allowlist for this repo w/ fewer-permission-prompts.
-
-3. It is okay for you to run these tools autonomously, but only after the allowlist has been created.
-
-
-
-
-
-The player should move relatively slowly and the playing space should be large. the screen should scroll along with the player. in terms of animation, the players should appear to smoothly move between the grid cells.
+Multiplayer Snake, Next.js + Rust/WASM. Human controls one snake, AI
+controls the rest. Proximity to other snakes grants a speed boost and more
+points. Player moves relatively slowly; the play space is large; the camera
+scrolls with the player; movement between grid cells should animate
+smoothly.
