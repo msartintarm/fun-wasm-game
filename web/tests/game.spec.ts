@@ -69,3 +69,25 @@ test("shows game over on wall collision and restarts", async ({ page }) => {
   await expect(page.getByText("Game Over")).toBeHidden();
   await expect(page.getByText("Score: 0")).toBeVisible();
 });
+
+// Per-snake render state (emoji theme, boosted, color) only exists inside
+// canvas draw calls, which nothing in Playwright can inspect directly — so
+// GameCanvas exposes it via window.__testHooks (see isE2EDebug in
+// lib/env.ts, only set by this project's webServer config) instead of
+// relying on screenshots to verify it.
+test("window.__testHooks reflects the devil (AI 1) and cat (AI 2) theme assignment", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await expect(page.getByText("Loading engine…")).toBeHidden({ timeout: 15_000 });
+  // Chaos Arena (the default level) has 30 AI, so both AI Snake 1 and
+  // AI Snake 2 already exist without switching levels.
+
+  await page.waitForFunction(() => (window.__testHooks?.snakes.length ?? 0) > 0);
+  const hooks = await page.evaluate(() => window.__testHooks);
+
+  const themes = hooks?.snakes.map((s) => s.theme) ?? [];
+  expect(themes).toContain("devil");
+  expect(themes).toContain("cat");
+  expect(hooks?.snakes.some((s) => s.isPlayer)).toBe(true);
+});

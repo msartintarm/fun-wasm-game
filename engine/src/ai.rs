@@ -3,8 +3,12 @@ use std::collections::{HashSet, VecDeque};
 use crate::config::FoodTargeting;
 use crate::direction::Direction;
 use crate::game::Game;
-use crate::snake::CandidateScore;
-use crate::{AI_LOOKAHEAD_STEPS, PROXIMITY_SEEK_DIVISOR};
+use crate::snake::{AiBehavior, CandidateScore};
+use crate::{AI_LOOKAHEAD_STEPS, PROXIMITY_SEEK_DIVISOR, SPEED_ESTIMATE_SCALE, SPEED_SEEKING_BOOST_BONUS};
+
+fn manhattan(a: (i32, i32), b: (i32, i32)) -> i32 {
+    (a.0 - b.0).abs() + (a.1 - b.1).abs()
+}
 
 impl Game {
     /// Like `is_safe`, but obstacle-checks a hypothetical body for
@@ -201,6 +205,85 @@ impl Game {
         cells
     }
 
+    /// True when landing on `next` would make `index` boosted — same three
+    /// conditions `effective_speed` checks for real, just evaluated for a
+    /// hypothetical candidate cell instead of the snake's actual position.
+    /// This is the raw signal `AiBehavior::SpeedSeeking` chases.
+    fn would_be_boosted(&self, index: usize, next: (i32, i32)) -> bool {
+        self.is_edge_cell(next)
+            || self.min_distance_to_others_from(index, next) <= self.config.proximity_radius
+            || self.snakes[index].food_boost_remaining > 0
+    }
+
+    /// The original heuristic: food distance dominates, proximity to
+    /// another snake nudges ties.
+    fn default_desirability(
+        &self,
+        next: (i32, i32),
+        food_target: Option<(i32, i32)>,
+        other_target: Option<(i32, i32)>,
+    ) -> i32 {
+        let food_dist = food_target.map(|t| -manhattan(next, t)).unwrap_or(0);
+        // Capped at proximity_radius: once already close enough to be
+        // boosted, closing the distance further buys nothing (the boost is
+        // binary), so there's no reason to keep pulling the AI toward an
+        // actual collision.
+        let other_dist = other_target
+            .map(|t| -manhattan(next, t).max(self.config.proximity_radius))
+            .unwrap_or(0);
+        // Scale food_dist up rather than divide other_dist down — same
+        // weighting ratio, but avoids integer division truncating two
+        // different other_dist values to one tied score.
+        food_dist * PROXIMITY_SEEK_DIVISOR + other_dist
+    }
+
+    /// Estimates time-to-food for landing on `next`: a boost-eligible cell
+    /// (edge / near another snake / active food boost) raises effective
+    /// speed for the leg beyond it, so `distance / speed` — not raw
+    /// distance — is what "closer" means here. A detour toward a boost
+    /// only wins when it actually shortens the estimated time, not just
+    /// because it's boosted; this is the thing that makes the behavior use
+    /// the speed calculation to pick a trajectory, rather than chasing
+    /// speed as a goal that competes with food.
+    fn speed_seeking_desirability(
+        &self,
+        index: usize,
+        next: (i32, i32),
+        food_target: Option<(i32, i32)>,
+    ) -> i32 {
+        let boosted = self.would_be_boosted(index, next);
+        let speed = if boosted { self.config.boost_multiplier } else { 1.0 };
+        match food_target {
+            Some(t) => {
+                let distance = manhattan(next, t) as f64;
+                // Negative estimated ticks-to-food — less time is more
+                // desirable, matching the sign convention every other
+                // desirability term uses (closer = higher score).
+                -((distance / speed) * SPEED_ESTIMATE_SCALE) as i32
+            }
+            // No food to optimize toward — nothing to weigh the boost
+            // against, so just mildly prefer staying fast.
+            None if boosted => SPEED_SEEKING_BOOST_BONUS,
+            None => 0,
+        }
+    }
+
+    /// Dispatches to whichever pure desirability function `Snake::ai_behavior`
+    /// selects. Adding a behavior is: add an `AiBehavior` variant, add a
+    /// function above, add a match arm here.
+    fn desirability(
+        &self,
+        index: usize,
+        next: (i32, i32),
+        food_target: Option<(i32, i32)>,
+        other_target: Option<(i32, i32)>,
+    ) -> i32 {
+        match self.snakes[index].ai_behavior {
+            AiBehavior::Default => self.default_desirability(next, food_target, other_target),
+            AiBehavior::SpeedSeeking => self.speed_seeking_desirability(index, next, food_target),
+        }
+    }
+
     /// Scores every legal candidate direction for `index` — legal meaning
     /// not an immediate reversal and not immediately unsafe. Pure: reads
     /// game state, mutates nothing, so tests can call it directly and
@@ -249,24 +332,7 @@ impl Game {
                 let space = self.lookahead_min_space(index, sim_body, d, safety_margin);
                 let has_room = space >= safety_margin;
                 let not_predicted_collision = !enemy_cells.contains(&next);
-                let food_dist = food_target
-                    .map(|t| -((next.0 - t.0).abs() + (next.1 - t.1).abs()))
-                    .unwrap_or(0);
-                // Capped at proximity_radius: once already close enough to
-                // be boosted, closing the distance further buys nothing
-                // (the boost is binary), so there's no reason to keep
-                // pulling the AI toward an actual collision.
-                let other_dist = other_target
-                    .map(|t| {
-                        let d = (next.0 - t.0).abs() + (next.1 - t.1).abs();
-                        -d.max(self.config.proximity_radius)
-                    })
-                    .unwrap_or(0);
-                // Scale food_dist up rather than divide other_dist down —
-                // same weighting ratio, but avoids integer division
-                // truncating two different other_dist values to one tied
-                // score.
-                let desirability = food_dist * PROXIMITY_SEEK_DIVISOR + other_dist;
+                let desirability = self.desirability(index, next, food_target, other_target);
                 Some(CandidateScore {
                     direction: d,
                     has_room,

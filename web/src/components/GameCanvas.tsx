@@ -13,19 +13,66 @@ const CANVAS_W = VIEWPORT_CELLS_W * CELL_SIZE;
 const CANVAS_H = VIEWPORT_CELLS_H * CELL_SIZE;
 
 const AI_COLORS = ["#3b82f6", "#f97316", "#a855f7", "#06b6d4", "#e879f9"];
+const AI_BOOSTED_BRIGHTEN = 0.5; // toward white, 0-1 — distinct from the player's flat color swap
 const DEATH_FADE_MS = 1000;
 const DEATH_COLOR = "#7f1d1d";
 const EAT_FLASH_MS = 500;
 
-// Priority: dead > just ate > near another snake > boosted > idle.
-const EMOJI_EATING = "😋";
-const EMOJI_NEAR = "😬";
-const EMOJI_BOOSTED = "😎";
-const EMOJI_IDLE = "🙂";
-// Death emoji varies by cause, from the engine's DeathCause classification.
-const EMOJI_DEAD_WALL = "🤕";
-const EMOJI_DEAD_SELF = "🪢";
-const EMOJI_DEAD_OTHER = "💥";
+// Per-snake emoji set. Priority within a set: dead > just ate > near
+// another snake > boosted > idle.
+interface EmojiTheme {
+  idle: string;
+  near: string;
+  boosted: string;
+  eating: string;
+  deadWall: string;
+  deadSelf: string;
+  deadOther: string;
+}
+
+const DEFAULT_THEME: EmojiTheme = {
+  idle: "🙂",
+  near: "😬",
+  boosted: "😎",
+  eating: "😋",
+  deadWall: "🤕",
+  deadSelf: "🪢",
+  deadOther: "💥",
+};
+// AI Snake 1 — also the AI that uses the speed-seeking movement behavior.
+const DEVIL_THEME: EmojiTheme = {
+  idle: "😈",
+  near: "😏",
+  boosted: "🔥",
+  eating: "👹",
+  deadWall: "💥",
+  deadSelf: "🪢",
+  deadOther: "💀",
+};
+// AI Snake 2 — also the AI that uses reachability-aware food targeting.
+const CAT_THEME: EmojiTheme = {
+  idle: "🐱",
+  near: "🙀",
+  boosted: "😼",
+  eating: "😻",
+  deadWall: "💫",
+  deadSelf: "🧶",
+  deadOther: "😾",
+};
+
+type ThemeName = "default" | "devil" | "cat";
+
+const EMOJI_THEMES: Record<ThemeName, EmojiTheme> = {
+  default: DEFAULT_THEME,
+  devil: DEVIL_THEME,
+  cat: CAT_THEME,
+};
+
+function themeNameForAiNumber(aiNumber: number | null): ThemeName {
+  if (aiNumber === 1) return "devil";
+  if (aiNumber === 2) return "cat";
+  return "default";
+}
 
 // Placeholder until default_config() loads from the wasm module.
 const FALLBACK_CONFIG: FullConfig = {
@@ -68,37 +115,102 @@ interface AiScoreEntry {
 
 const TOP_AI_COUNT = 5;
 
-// Labels AI snakes by their fixed position among AI in the snakes array
-// (spawn order), which stays stable for a game's whole lifetime even as
-// snakes die — then ranks by current score, highest first.
+// Stable AI numbering (1-based, by spawn-order position among AI, null for
+// the player) — independent of current alive/dead status, so identity
+// (theme, leaderboard label) doesn't shift as other snakes die.
+function aiNumbers(snakes: SnakeState[]): (number | null)[] {
+  let n = 0;
+  return snakes.map((s) => {
+    if (s.is_player) return null;
+    n += 1;
+    return n;
+  });
+}
+
 function topAiScores(snakes: SnakeState[]): AiScoreEntry[] {
-  let aiNumber = 0;
-  return snakes
-    .filter((s) => !s.is_player)
-    .map((s) => {
-      aiNumber += 1;
-      return { label: `AI Snake ${aiNumber}`, score: s.score };
-    })
+  return aiNumbers(snakes)
+    .map((n, i) => (n === null ? null : { label: `AI Snake ${n}`, score: snakes[i].score }))
+    .filter((entry): entry is AiScoreEntry => entry !== null)
     .sort((a, b) => b.score - a.score)
     .slice(0, TOP_AI_COUNT);
 }
 
-function headEmoji(snake: SnakeState, ateRecently: boolean): string {
-  if (ateRecently) return EMOJI_EATING;
-  if (snake.near_others) return EMOJI_NEAR;
-  if (snake.boosted) return EMOJI_BOOSTED;
-  return EMOJI_IDLE;
+interface SnakeDebugInfo {
+  aiNumber: number | null;
+  isPlayer: boolean;
+  alive: boolean;
+  boosted: boolean;
+  theme: ThemeName;
+  color: string;
 }
 
-function deathEmoji(cause: DeathCause): string {
+interface TestHooks {
+  snakes: SnakeDebugInfo[];
+}
+
+declare global {
+  interface Window {
+    // Only ever assigned when e2eDebug is true (see isE2EDebug) — a
+    // namespaced escape hatch for Playwright to read render state that
+    // isn't naturally DOM-shaped (it's canvas draw calls), without adding
+    // markup or React state for tests' sake.
+    __testHooks?: TestHooks;
+  }
+}
+
+// Reuses the exact same theme/color functions the canvas renderer calls,
+// so window.__testHooks can never disagree with what's actually drawn.
+function snakeDebugInfo(snakes: SnakeState[]): SnakeDebugInfo[] {
+  const nums = aiNumbers(snakes);
+  return snakes.map((s, i) => ({
+    aiNumber: nums[i],
+    isPlayer: s.is_player,
+    alive: s.alive,
+    boosted: s.boosted,
+    theme: themeNameForAiNumber(nums[i]),
+    color: colorFor(s, nums[i]),
+  }));
+}
+
+function headEmoji(snake: SnakeState, ateRecently: boolean, theme: EmojiTheme): string {
+  if (ateRecently) return theme.eating;
+  if (snake.near_others) return theme.near;
+  if (snake.boosted) return theme.boosted;
+  return theme.idle;
+}
+
+function deathEmoji(cause: DeathCause, theme: EmojiTheme): string {
   switch (cause) {
     case DeathCause.Wall:
-      return EMOJI_DEAD_WALL;
+      return theme.deadWall;
     case DeathCause.SelfCollision:
-      return EMOJI_DEAD_SELF;
+      return theme.deadSelf;
     case DeathCause.OtherCollision:
-      return EMOJI_DEAD_OTHER;
+      return theme.deadOther;
   }
+}
+
+// Lightens a #rrggbb color toward white by `amount` (0-1) — used to make a
+// boosted AI's own color visibly brighter without losing its identity hue,
+// as opposed to the player's flat color swap when boosted.
+function brighten(hex: string, amount: number): string {
+  const n = parseInt(hex.slice(1), 16);
+  const r = (n >> 16) & 0xff;
+  const g = (n >> 8) & 0xff;
+  const b = n & 0xff;
+  const lighten = (c: number) => Math.round(c + (255 - c) * amount);
+  return `rgb(${lighten(r)}, ${lighten(g)}, ${lighten(b)})`;
+}
+
+// AI keeps its identity hue but brightens toward white when boosted —
+// distinct from the player's flat color swap. Shared by the canvas
+// renderer and the debug DOM mirror so they can never disagree.
+function colorFor(snake: SnakeState, aiNumber: number | null): string {
+  if (snake.is_player) {
+    return snake.boosted ? "#facc15" : "#22c55e";
+  }
+  const base = AI_COLORS[((aiNumber ?? 1) - 1) % AI_COLORS.length];
+  return snake.boosted ? brighten(base, AI_BOOSTED_BRIGHTEN) : base;
 }
 
 interface GameStateJson {
@@ -322,8 +434,9 @@ function render(
     ctx.fill();
   }
 
-  let aiIndex = 0;
+  const nums = aiNumbers(currState.snakes);
   currState.snakes.forEach((snake, i) => {
+    const theme = EMOJI_THEMES[themeNameForAiNumber(nums[i])];
     if (!snake.alive) {
       const death = deaths[i];
       if (!death) return;
@@ -341,18 +454,12 @@ function render(
         );
       });
       const [dx, dy] = death.body[0];
-      drawHeadEmoji(ctx, deathEmoji(death.cause), dx, dy);
+      drawHeadEmoji(ctx, deathEmoji(death.cause, theme), dx, dy);
       ctx.globalAlpha = 1;
       return;
     }
 
-    let color: string;
-    if (snake.is_player) {
-      color = snake.boosted ? "#facc15" : "#22c55e";
-    } else {
-      color = AI_COLORS[aiIndex % AI_COLORS.length];
-      aiIndex += 1;
-    }
+    const color = colorFor(snake, nums[i]);
 
     const body = interpolatedBody(prevState.snakes[i], snake, t);
     ctx.fillStyle = color;
@@ -375,13 +482,21 @@ function render(
 
     const ateAt = ateTimestamps[i];
     const ateRecently = ateAt !== null && ateAt !== undefined && now - ateAt < EAT_FLASH_MS;
-    drawHeadEmoji(ctx, headEmoji(snake, ateRecently), hx, hy);
+    drawHeadEmoji(ctx, headEmoji(snake, ateRecently, theme), hx, hy);
   });
 
   ctx.restore();
 }
 
-export default function GameCanvas() {
+interface GameCanvasProps {
+  // Server-provided (see isE2EDebug in lib/env.ts, passed down from
+  // app/page.tsx) — only true when Playwright's webServer sets E2E_DEBUG
+  // AND this isn't a production build. Never true in a developer's own
+  // `npm run dev`.
+  e2eDebug: boolean;
+}
+
+export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const gameRef = useRef<GameInstance | null>(null);
   const moduleRef = useRef<EngineModule | null>(null);
@@ -427,6 +542,7 @@ export default function GameCanvas() {
     setGameOver(false);
     setBoosted(false);
     setAiScores(topAiScores(initial.snakes));
+    if (e2eDebug) window.__testHooks = { snakes: snakeDebugInfo(initial.snakes) };
 
     intervalRef.current = setInterval(() => {
       const g = gameRef.current;
@@ -459,6 +575,7 @@ export default function GameCanvas() {
       setScore(g.score());
       setBoosted(nextState.snakes.find((s) => s.is_player)?.boosted ?? false);
       setAiScores(topAiScores(nextState.snakes));
+      if (e2eDebug) window.__testHooks = { snakes: snakeDebugInfo(nextState.snakes) };
 
       // Delay the Game Over overlay so the death fade is actually visible
       // underneath it instead of being covered up the instant it starts.
@@ -495,7 +612,7 @@ export default function GameCanvas() {
       rafRef.current = requestAnimationFrame(frame);
     }
     rafRef.current = requestAnimationFrame(frame);
-  }, []);
+  }, [e2eDebug]);
 
   const switchLevel = useCallback(() => {
     const next = (presetIndex + 1) % CONFIG_PRESETS.length;
@@ -594,8 +711,9 @@ export default function GameCanvas() {
         </button>
       </div>
       <p className={styles.description}>
-        Arrow keys or WASD to move. Get close to another snake — or eat food
-        — to speed up and score more points. But don&apos;t crash.
+        Arrow keys or WASD to move. Get close to another snake, eat food, or
+        hug the arena&apos;s edge to speed up — proximity and food also
+        score points. But don&apos;t crash.
       </p>
       <ConfigPanel config={config} defaults={defaults} onApply={startGame} />
     </div>

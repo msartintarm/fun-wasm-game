@@ -62,6 +62,13 @@ export default function ConfigPanel({ config, defaults, onApply }: ConfigPanelPr
       </button>
       {open && (
         <form className={styles.panel} onSubmit={handleApply}>
+          <p className={styles.legend}>
+            Boosts stack from three sources: near another snake, after eating
+            food, or along the arena&apos;s edge. AI Snake 1 (😈) picks its
+            path to chase whichever boost gets it to food fastest. AI Snake 2
+            (🐱) can ignore food it can&apos;t currently reach — see &quot;AI
+            Snake 2 food targeting&quot; below.
+          </p>
           <div className={styles.grid}>
             {CONFIG_FIELDS.map((field) => (
               <label key={field.key} className={styles.field}>

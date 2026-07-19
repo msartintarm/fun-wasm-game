@@ -1,6 +1,6 @@
 // Matches engine::FoodTargeting's serde(rename_all = "snake_case") output.
-// Only the first AI spawned ever uses this — every other AI always targets
-// the nearest food regardless of whether it's reachable.
+// Only AI Snake 2 ever uses this — every other AI always targets the
+// nearest food regardless of whether it's reachable.
 export type FoodTargeting = "nearest" | "nearest_reachable";
 
 // Mirrors engine::Config (see engine/src/lib.rs) plus tickMs, which is a
@@ -58,12 +58,12 @@ export interface ConfigSelectFieldMeta {
 export const CONFIG_SELECT_FIELDS: ConfigSelectFieldMeta[] = [
   {
     key: "foodTargeting",
-    label: "AI Snake 1 food targeting",
+    label: "AI Snake 2 food targeting",
     options: [
       { value: "nearest", label: "Nearest (may commit to blocked food)" },
       { value: "nearest_reachable", label: "Nearest reachable" },
     ],
-    description: "Only AI Snake 1 uses this — every other AI always targets the nearest food regardless of whether it's currently reachable.",
+    description: "Only AI Snake 2 uses this — every other AI always targets the nearest food regardless of whether it's currently reachable.",
   },
 ];
 
@@ -75,6 +75,23 @@ export interface ConfigPreset {
 }
 
 export const CONFIG_PRESETS: ConfigPreset[] = [
+  {
+    name: "Chaos Arena",
+    config: {
+      width: 80,
+      height: 60,
+      numAi: 30,
+      tickMs: TICK_MS_DEFAULT,
+      playerSpeed: 1,
+      boostMultiplier: 1.6,
+      proximityRadius: 3,
+      foodBoostTicks: 20,
+      foodScore: 10,
+      boostedFoodScore: 25,
+      minFood: 18,
+      foodTargeting: "nearest_reachable",
+    },
+  },
   {
     name: "Duel",
     config: {
@@ -100,23 +117,6 @@ export const CONFIG_PRESETS: ConfigPreset[] = [
       numAi: 8,
       tickMs: TICK_MS_DEFAULT,
       playerSpeed: 0.85,
-      boostMultiplier: 1.6,
-      proximityRadius: 3,
-      foodBoostTicks: 20,
-      foodScore: 10,
-      boostedFoodScore: 25,
-      minFood: 18,
-      foodTargeting: "nearest_reachable",
-    },
-  },
-  {
-    name: "Chaos Arena",
-    config: {
-      width: 80,
-      height: 60,
-      numAi: 30,
-      tickMs: TICK_MS_DEFAULT,
-      playerSpeed: 1,
       boostMultiplier: 1.6,
       proximityRadius: 3,
       foodBoostTicks: 20,

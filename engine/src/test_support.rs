@@ -3,7 +3,7 @@ use std::collections::{HashMap, VecDeque};
 use crate::config::{Config, FoodTargeting};
 use crate::direction::Direction;
 use crate::game::Game;
-use crate::snake::Snake;
+use crate::snake::{AiBehavior, Snake};
 
 /// Test-only helpers, at crate scope so any `#[cfg(test)] mod` can use them.
 impl Game {
@@ -118,6 +118,7 @@ pub(crate) fn game_from_grid(rows: &[&str], config: Config) -> Game {
             death_cause: None,
             score: 0,
             food_targeting: FoodTargeting::Nearest,
+            ai_behavior: AiBehavior::Default,
         };
     }
 

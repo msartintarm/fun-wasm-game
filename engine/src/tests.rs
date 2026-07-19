@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use crate::config::{Config, FoodTargeting};
 use crate::direction::Direction;
 use crate::game::Game;
-use crate::snake::DeathCause;
+use crate::snake::{AiBehavior, DeathCause};
 use crate::test_support::game_from_grid;
 use crate::{MAX_QUEUED_DIRECTIONS, PROXIMITY_TICK_BONUS, STARTING_LENGTH};
 
@@ -195,6 +195,30 @@ fn eating_food_grants_a_temporary_speed_boost_to_any_snake() {
 }
 
 #[test]
+fn is_boosted_at_the_edge_of_the_arena() {
+    let config = test_config();
+    let mut game = Game::with_seed(config, 1);
+    let player = game.player_index().unwrap();
+    game.snakes[player].body = vec![(0, 10), (1, 10), (2, 10), (3, 10)]; // head on the west edge
+
+    assert!(game.is_at_edge(player));
+    let expected = config.player_speed * config.boost_multiplier;
+    assert!(
+        (game.effective_speed(player) - expected).abs() < 1e-9,
+        "expected edge-boosted speed {expected}, got {}",
+        game.effective_speed(player)
+    );
+}
+
+#[test]
+fn is_not_boosted_away_from_the_edge() {
+    // Default spawn position (mid-board) isn't near any edge.
+    let game = Game::with_seed(test_config(), 1);
+    let player = game.player_index().unwrap();
+    assert!(!game.is_at_edge(player));
+}
+
+#[test]
 fn dies_on_wall_collision_and_freezes_state() {
     let mut config = test_config();
     config.width = 6;
@@ -332,7 +356,6 @@ fn ai_flood_fill_avoids_a_dead_end_even_toward_food() {
 fn nearest_reachable_food_ignores_food_sealed_by_a_snake_body() {
     let mut config = test_config();
     config.num_ai = 2;
-    config.food_targeting = FoodTargeting::NearestReachable;
     let mut game = Game::with_seed(config, 1);
     let ai_indices: Vec<usize> = game
         .snakes
@@ -343,6 +366,10 @@ fn nearest_reachable_food_ignores_food_sealed_by_a_snake_body() {
         .collect();
     let ai = ai_indices[0];
     let wall = ai_indices[1];
+    // Set directly rather than relying on spawn-order assignment — keeps
+    // this test independent of which AI number the config happens to wire
+    // NearestReachable to.
+    game.snakes[ai].food_targeting = FoodTargeting::NearestReachable;
 
     game.snakes[ai].body = vec![(5, 10), (6, 10), (7, 10), (8, 10)];
     // The wall snake's body seals (10, 10) off from all 4 orthogonal
@@ -389,7 +416,7 @@ fn nearest_food_ignores_reachability_by_default() {
 }
 
 #[test]
-fn only_the_first_ai_gets_the_configured_food_targeting_strategy() {
+fn only_the_second_ai_gets_the_configured_food_targeting_strategy() {
     let mut config = test_config();
     config.num_ai = 3;
     config.food_targeting = FoodTargeting::NearestReachable;
@@ -402,18 +429,111 @@ fn only_the_first_ai_gets_the_configured_food_targeting_strategy() {
         .map(|(i, _)| i)
         .collect();
 
+    assert_eq!(game.snakes[ai_indices[0]].food_targeting, FoodTargeting::Nearest);
     assert_eq!(
-        game.snakes[ai_indices[0]].food_targeting,
+        game.snakes[ai_indices[1]].food_targeting,
         FoodTargeting::NearestReachable,
         "the designated AI should carry the configured strategy"
     );
+    assert_eq!(game.snakes[ai_indices[2]].food_targeting, FoodTargeting::Nearest);
+}
+
+#[test]
+fn only_the_first_ai_gets_the_speed_seeking_behavior() {
+    let mut config = test_config();
+    config.num_ai = 3;
+    let game = Game::with_seed(config, 1);
+    let ai_indices: Vec<usize> = game
+        .snakes
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| !s.is_player)
+        .map(|(i, _)| i)
+        .collect();
+
+    assert_eq!(
+        game.snakes[ai_indices[0]].ai_behavior,
+        AiBehavior::SpeedSeeking,
+        "the first AI should carry the speed-seeking movement behavior"
+    );
     for &i in &ai_indices[1..] {
-        assert_eq!(
-            game.snakes[i].food_targeting,
-            FoodTargeting::Nearest,
-            "every other AI should keep the original distance-only targeting"
-        );
+        assert_eq!(game.snakes[i].ai_behavior, AiBehavior::Default);
     }
+}
+
+#[test]
+fn speed_seeking_does_not_detour_to_the_edge_when_food_is_right_there() {
+    // Regression guard: an earlier version gave the edge a flat bonus that
+    // dominated regardless of cost, so the AI would detour to the wall
+    // even when doing so moved it away from food that was immediately
+    // reachable — using the wall for its own sake, not because it helped.
+    let mut config = test_config();
+    config.num_ai = 1;
+    let mut game = Game::with_seed(config, 1);
+    let ai = game.snakes.iter().position(|s| !s.is_player).unwrap();
+    game.snakes[ai].ai_behavior = AiBehavior::SpeedSeeking;
+
+    // Head one cell off the west edge, body trailing south so Left (to the
+    // edge) and Right (into open space) are both legal, safe candidates.
+    game.snakes[ai].body = vec![(1, 20), (1, 21), (1, 22), (1, 23)];
+    game.snakes[ai].direction = Direction::Up;
+    // Food sits exactly where Right would land — reachable in one step
+    // without ever detouring toward the edge at all.
+    game.food = vec![(2, 20)];
+
+    let scores = game.score_candidates(ai);
+    let left = scores.iter().find(|c| c.direction == Direction::Left).unwrap();
+    let right = scores.iter().find(|c| c.direction == Direction::Right).unwrap();
+
+    assert!(
+        right.desirability > left.desirability,
+        "should prefer immediate food over a detour to the edge that doesn't help \
+         (left={}, right={})",
+        left.desirability,
+        right.desirability
+    );
+}
+
+#[test]
+fn speed_seeking_prefers_a_boost_that_costs_no_extra_distance() {
+    // When two candidates are equally far from food, the boost-eligible
+    // one should win — it reaches food in less estimated time for the
+    // same distance, no trade-off involved.
+    let mut config = test_config();
+    config.num_ai = 2;
+    let mut game = Game::with_seed(config, 1);
+    let ai_indices: Vec<usize> = game
+        .snakes
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| !s.is_player)
+        .map(|(i, _)| i)
+        .collect();
+    let ai = ai_indices[0];
+    let ally = ai_indices[1];
+    game.snakes[ai].ai_behavior = AiBehavior::SpeedSeeking;
+
+    // Body runs south so Left and Right are both legal, safe candidates,
+    // and both land exactly 21 cells (Manhattan) from the food straight
+    // north — equidistant.
+    game.snakes[ai].body = vec![(20, 20), (20, 21), (20, 22), (20, 23)];
+    game.snakes[ai].direction = Direction::Down;
+    game.food = vec![(20, 0)];
+    // Within proximity_radius (3) of Right's landing cell (21, 20) but not
+    // of Left's (19, 20) — distance 2 vs. 4.
+    game.snakes[ally].body = vec![(23, 20)];
+
+    let scores = game.score_candidates(ai);
+    let left = scores.iter().find(|c| c.direction == Direction::Left).unwrap();
+    let right = scores.iter().find(|c| c.direction == Direction::Right).unwrap();
+
+    assert!(
+        right.desirability > left.desirability,
+        "equal food distance should let the boost-eligible candidate win \
+         (left={}, right={})",
+        left.desirability,
+        right.desirability
+    );
 }
 
 #[test]
@@ -536,6 +656,10 @@ fn drifts_toward_another_snake_when_nothing_else_favors_a_direction() {
     let mut game = Game::with_seed(config, 1);
     let ai = game.snakes.iter().position(|s| !s.is_player).unwrap();
     let other = 1 - ai;
+    // This tests the default proximity-desirability heuristic specifically
+    // — set explicitly rather than relying on which AI number spawn
+    // assignment happens to give the default behavior to.
+    game.snakes[ai].ai_behavior = AiBehavior::Default;
 
     game.snakes[ai].body = vec![(20, 20), (19, 20), (18, 20), (17, 20)];
     game.snakes[ai].direction = Direction::Right;

@@ -41,6 +41,21 @@ pub(crate) enum DeathCause {
     OtherCollision,
 }
 
+/// An AI's overall movement preference, selected via `Snake::ai_behavior`.
+/// Each variant maps to one pure desirability function (see
+/// `Game::desirability` in `ai.rs`), so adding a behavior is: add a
+/// variant, add a function, add a match arm — no existing behavior touched.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum AiBehavior {
+    /// Food-first, proximity as a tiebreaker — the original heuristic.
+    Default,
+    /// Prioritizes landing on cells that would raise its own effective
+    /// speed (edge of the arena / near another snake / an active food
+    /// boost) over closing distance to food — it picks its trajectory by
+    /// chasing whatever keeps it fastest.
+    SpeedSeeking,
+}
+
 #[derive(Clone, Serialize)]
 pub(crate) struct SnakeState {
     pub(crate) body: Vec<(i32, i32)>,
@@ -81,6 +96,9 @@ pub(crate) struct Snake {
     /// decision time, is what makes it possible for only one AI to use a
     /// non-default strategy while the rest keep the original behavior.
     pub(crate) food_targeting: FoodTargeting,
+    /// Same pattern as `food_targeting`, for overall movement preference —
+    /// see `AiBehavior`.
+    pub(crate) ai_behavior: AiBehavior,
 }
 
 #[derive(Serialize)]

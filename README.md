@@ -43,8 +43,8 @@ browser actually loads.
   (`FoodTargeting::NearestReachable`, ignores food it can't currently path
   to), toggled via `Config.food_targeting` / the settings panel.
 - Speed: AI baseline 1.0, player baseline `player_speed` (config). Boost
-  (proximity or food) multiplies current speed uncapped for both — the
-  player is *not* capped at AI baseline.
+  (proximity, food, or being on the arena's edge ring) multiplies current
+  speed for both.
 - Per-snake score (not just the player's); UI shows player score + top-5 AI
   leaderboard as a canvas overlay (top-right).
 - 3 presets (Duel/Balanced/Chaos Arena), cycled via a "Switch Level" button
@@ -55,7 +55,7 @@ browser actually loads.
 - Settings panel is a real `<form>`: `required` + `min`/`max` on every
   numeric field, native browser validation blocks "Apply" until valid.
 
-24 Rust tests (1 `#[ignore]`d diagnostic), 3 Playwright E2E, `tsc` and
+26 Rust tests (1 `#[ignore]`d diagnostic), 3 Playwright E2E, `tsc` and
 `eslint` clean.
 
 ## Testing AI logic in specific setups

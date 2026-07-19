@@ -4,7 +4,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::config::{Config, FoodTargeting};
 use crate::direction::Direction;
-use crate::snake::{DeathCause, GameState, Snake, SnakeState};
+use crate::snake::{AiBehavior, DeathCause, GameState, Snake, SnakeState};
 use crate::{MAX_QUEUED_DIRECTIONS, PROXIMITY_TICK_BONUS, STARTING_LENGTH};
 
 #[wasm_bindgen]
@@ -29,6 +29,7 @@ impl Game {
         total: usize,
         is_player: bool,
         food_targeting: FoodTargeting,
+        ai_behavior: AiBehavior,
     ) -> Snake {
         let spacing = ((height - 2).max(1)) / (total as i32 + 1).max(1);
         let start_y = (1 + spacing * (index as i32 + 1)).clamp(1, height - 2);
@@ -49,6 +50,7 @@ impl Game {
             death_cause: None,
             score: 0,
             food_targeting,
+            ai_behavior,
         }
     }
 
@@ -130,21 +132,28 @@ impl Game {
         DeathCause::OtherCollision
     }
 
-    pub(crate) fn min_distance_to_others(&self, index: usize) -> i32 {
-        let head = self.snakes[index].body[0];
+    /// Pure, position-based: how close `from` is to any other living
+    /// snake's body, not necessarily `index`'s own current head. Lets
+    /// `ai.rs` ask "would landing *here* count as near another snake?" for
+    /// a hypothetical candidate cell, not just the real-time question.
+    pub(crate) fn min_distance_to_others_from(&self, index: usize, from: (i32, i32)) -> i32 {
         let mut best = i32::MAX;
         for (i, snake) in self.snakes.iter().enumerate() {
             if i == index || !snake.alive {
                 continue;
             }
             for seg in &snake.body {
-                let d = (seg.0 - head.0).abs() + (seg.1 - head.1).abs();
+                let d = (seg.0 - from.0).abs() + (seg.1 - from.1).abs();
                 if d < best {
                     best = d;
                 }
             }
         }
         best
+    }
+
+    pub(crate) fn min_distance_to_others(&self, index: usize) -> i32 {
+        self.min_distance_to_others_from(index, self.snakes[index].body[0])
     }
 
     /// True when this snake is within the config's proximity radius of any
@@ -155,14 +164,27 @@ impl Game {
             && self.min_distance_to_others(index) <= self.config.proximity_radius
     }
 
+    /// Pure, position-based: true when `pos` is on the outermost ring of
+    /// the arena — the same cells the frontend renders as a visually
+    /// distinct edge zone. Takes a bare position (not an index) so it can
+    /// answer "would a hypothetical candidate cell be on the edge?" too.
+    pub(crate) fn is_edge_cell(&self, pos: (i32, i32)) -> bool {
+        pos.0 == 0 || pos.1 == 0 || pos.0 == self.config.width - 1 || pos.1 == self.config.height - 1
+    }
+
+    /// True when this snake's head is on the edge ring right now.
+    pub(crate) fn is_at_edge(&self, index: usize) -> bool {
+        self.is_edge_cell(self.snakes[index].body[0])
+    }
+
     /// Ticks moved per external tick for this snake, accounting for boosts.
     /// AI baseline is always 1.0; the player's baseline is `player_speed`
-    /// (<= 1.0). Boosted speed is hard-capped at 1.0 for the player, so it
-    /// can never outrun the AI's own baseline pace.
+    /// (<= 1.0).
     pub(crate) fn effective_speed(&self, index: usize) -> f64 {
         let snake = &self.snakes[index];
         let base = if snake.is_player { self.config.player_speed } else { 1.0 };
-        let boosted = self.is_near_others(index) || snake.food_boost_remaining > 0;
+        let boosted =
+            self.is_near_others(index) || snake.food_boost_remaining > 0 || self.is_at_edge(index);
         if boosted { base * self.config.boost_multiplier } else { base }
     }
 
@@ -191,16 +213,20 @@ impl Game {
             total,
             true,
             FoodTargeting::Nearest,
+            AiBehavior::Default,
         ));
         for i in 0..config.num_ai as usize {
-            // Only the first AI spawned gets the configured strategy — the
-            // rest always keep the original distance-only targeting, so
-            // the two behaviors can be compared side by side in one game.
-            let food_targeting = if i == 0 {
+            // Only the second AI spawned gets the configured food-targeting
+            // strategy, and only the first gets the speed-seeking movement
+            // behavior — the rest keep the original defaults, so each
+            // special behavior can be compared against the baseline side by
+            // side in one game.
+            let food_targeting = if i == 1 {
                 config.food_targeting
             } else {
                 FoodTargeting::Nearest
             };
+            let ai_behavior = if i == 0 { AiBehavior::SpeedSeeking } else { AiBehavior::Default };
             game.snakes.push(Game::spawn_snake(
                 config.width,
                 config.height,
@@ -208,6 +234,7 @@ impl Game {
                 total,
                 false,
                 food_targeting,
+                ai_behavior,
             ));
         }
 
@@ -361,7 +388,8 @@ impl Game {
                 body: s.body.clone(),
                 alive: s.alive,
                 is_player: s.is_player,
-                boosted: s.alive && (self.is_near_others(i) || s.food_boost_remaining > 0),
+                boosted: s.alive
+                    && (self.is_near_others(i) || s.food_boost_remaining > 0 || self.is_at_edge(i)),
                 near_others: s.alive && self.is_near_others(i),
                 death_cause: s.death_cause,
                 score: s.score,
