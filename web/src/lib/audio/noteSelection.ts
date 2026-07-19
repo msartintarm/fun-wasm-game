@@ -31,6 +31,7 @@ const CHORD_INTERVALS: Record<string, number[]> = {
 };
 
 const DEFAULT_OCTAVE_MIDI_BASE = 60; // C4
+const DEATH_OCTAVE_MIDI_BASE = 48; // C3 — an octave below the pickup range
 
 export function parseChordName(chord: string): { root: string; quality: string } {
   const match = /^([A-G][#b]?)(.*)$/.exec(chord);
@@ -51,4 +52,12 @@ export function pickPickupNote(chord: string, rng: () => number = Math.random): 
   const intervals = CHORD_INTERVALS[quality] ?? CHORD_INTERVALS[""];
   const interval = intervals[Math.floor(rng() * intervals.length)];
   return DEFAULT_OCTAVE_MIDI_BASE + rootSemitone + interval;
+}
+
+// Deterministic root note, not a random chord tone — reads as a resolving
+// "thud" rather than the pickup's random chime.
+export function pickDeathNote(chord: string): number {
+  const { root } = parseChordName(chord);
+  const rootSemitone = NOTE_TO_SEMITONE[root] ?? 0;
+  return DEATH_OCTAVE_MIDI_BASE + rootSemitone;
 }

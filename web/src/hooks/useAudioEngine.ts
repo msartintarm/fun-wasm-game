@@ -9,6 +9,7 @@ export interface AudioController {
   startTrack: (id: MusicTrackId | undefined) => void;
   stopTrack: () => void;
   triggerPickup: () => void;
+  triggerDeath: () => void;
   setMusicMuted: (muted: boolean) => void;
   setMusicVolume: (volume: number) => void;
   setEffectsMuted: (muted: boolean) => void;
@@ -32,6 +33,7 @@ export function useAudioEngine(kind: EngineKind): AudioController {
   );
   const stopTrack = useCallback(() => dispatch({ type: AudioCommandType.StopTrack }), [dispatch]);
   const triggerPickup = useCallback(() => dispatch({ type: AudioCommandType.TriggerPickup }), [dispatch]);
+  const triggerDeath = useCallback(() => dispatch({ type: AudioCommandType.TriggerDeath }), [dispatch]);
   const setMusicMuted = useCallback(
     (muted: boolean) => dispatch({ type: AudioCommandType.SetMusicMuted, muted }),
     [dispatch],
@@ -70,12 +72,24 @@ export function useAudioEngine(kind: EngineKind): AudioController {
       startTrack,
       stopTrack,
       triggerPickup,
+      triggerDeath,
       setMusicMuted,
       setMusicVolume,
       setEffectsMuted,
       setEffectsVolume,
       setMusicState,
     }),
-    [armAutoplay, startTrack, stopTrack, triggerPickup, setMusicMuted, setMusicVolume, setEffectsMuted, setEffectsVolume, setMusicState],
+    [
+      armAutoplay,
+      startTrack,
+      stopTrack,
+      triggerPickup,
+      triggerDeath,
+      setMusicMuted,
+      setMusicVolume,
+      setEffectsMuted,
+      setEffectsVolume,
+      setMusicState,
+    ],
   );
 }

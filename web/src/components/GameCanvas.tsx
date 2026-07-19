@@ -774,6 +774,7 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
       // Delay the Game Over overlay so the death fade is actually visible
       // underneath it instead of being covered up the instant it starts.
       if (g.is_game_over() && !gameOverTimeoutRef.current) {
+        audio.triggerDeath();
         gameOverTimeoutRef.current = setTimeout(() => setGameOver(true), DEATH_FADE_MS);
       }
     }, cfg.tickMs);

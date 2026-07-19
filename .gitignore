@@ -148,3 +148,6 @@ vite.config.ts.timestamp-*
 # Rust
 /engine/target
 target/
+
+# Claude Code local config
+.claude/

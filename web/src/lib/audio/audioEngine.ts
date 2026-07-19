@@ -15,6 +15,7 @@ export enum AudioCommandType {
   StartTrack = "startTrack",
   StopTrack = "stopTrack",
   TriggerPickup = "triggerPickup",
+  TriggerDeath = "triggerDeath",
   // Music and sound-effect volume/mute are independent channels (see
   // mixer.ts) — both engines route their background track/synth through
   // musicBus and their pickup sound through effectsBus, so these four
@@ -31,6 +32,7 @@ export type AudioCommand =
   | { type: AudioCommandType.StartTrack; id: MusicTrackId | undefined }
   | { type: AudioCommandType.StopTrack }
   | { type: AudioCommandType.TriggerPickup }
+  | { type: AudioCommandType.TriggerDeath }
   | { type: AudioCommandType.SetMusicMuted; muted: boolean }
   | { type: AudioCommandType.SetMusicVolume; volume: number }
   | { type: AudioCommandType.SetEffectsMuted; muted: boolean }

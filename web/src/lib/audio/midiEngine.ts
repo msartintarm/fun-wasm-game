@@ -3,7 +3,7 @@ import * as Tone from "tone";
 
 import { activeChordAt, loopDurationSeconds } from "./chordTimeline";
 import { effectsBus, musicBus, setEffectsMuted, setEffectsVolume, setMusicMuted, setMusicVolume } from "./mixer";
-import { pickPickupNote } from "./noteSelection";
+import { pickDeathNote, pickPickupNote } from "./noteSelection";
 import { TRACKS, trackAssetUrl, type MusicTrackId } from "./tracks";
 import { assertNever, AudioCommandType, type AudioEngine } from "./audioEngine";
 
@@ -135,6 +135,20 @@ export function createEngine(): AudioEngine {
     pickupSynth.triggerAttackRelease(freq, "8n");
   }
 
+  function triggerDeath() {
+    if (!currentTrackId) return;
+    const track = TRACKS[currentTrackId];
+    if (!track) return;
+
+    const elapsedMs = performance.now() - trackStartedAt;
+    const chord = activeChordAt(track.timeline, elapsedMs);
+    if (!chord) return;
+
+    const midiNote = pickDeathNote(chord);
+    const freq = Tone.Frequency(midiNote, "midi").toFrequency();
+    pickupSynth.triggerAttackRelease(freq, "2n");
+  }
+
   return (command) => {
     switch (command.type) {
       case AudioCommandType.Resume:
@@ -145,6 +159,8 @@ export function createEngine(): AudioEngine {
         return stopTrack();
       case AudioCommandType.TriggerPickup:
         return triggerPickup();
+      case AudioCommandType.TriggerDeath:
+        return triggerDeath();
       case AudioCommandType.SetMusicMuted:
         return setMusicMuted(command.muted);
       case AudioCommandType.SetMusicVolume:

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseChordName, pickPickupNote } from "./noteSelection";
+import { parseChordName, pickDeathNote, pickPickupNote } from "./noteSelection";
 
 describe("parseChordName", () => {
   it("parses a plain major triad", () => {
@@ -36,5 +36,20 @@ describe("pickPickupNote", () => {
 
   it("falls back to a major triad for an unrecognized quality", () => {
     expect(pickPickupNote("Cxyz", () => 0)).toBe(60);
+  });
+});
+
+describe("pickDeathNote", () => {
+  it("is the chord root, one octave below pickPickupNote's range", () => {
+    expect(pickDeathNote("C")).toBe(48); // C3
+    expect(pickDeathNote("Em")).toBe(52); // E3
+  });
+
+  it("is deterministic — same chord always gives the same note", () => {
+    expect(pickDeathNote("G")).toBe(pickDeathNote("G"));
+  });
+
+  it("ignores quality — only the root matters", () => {
+    expect(pickDeathNote("Cmaj7")).toBe(pickDeathNote("Cm"));
   });
 });
