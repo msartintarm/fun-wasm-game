@@ -1,7 +1,7 @@
 import { audioAssetUrl } from "./assetUrl";
-import { PRESET_TRACKS, TRACKS, type MusicTrack, type MusicTrackId } from "./data/tracks";
+import { MusicState, PRESET_TRACKS, TRACKS, type MusicTrack, type MusicTrackId } from "./data/tracks";
 
-export { PRESET_TRACKS, TRACKS };
+export { MusicState, PRESET_TRACKS, TRACKS };
 export type { MusicTrack, MusicTrackId };
 
 // pickTrackForPreset() lives in audioEngine.ts now — it's generic (takes

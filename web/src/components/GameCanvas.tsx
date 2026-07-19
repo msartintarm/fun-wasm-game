@@ -5,7 +5,7 @@ import ConfigPanel from "./ConfigPanel";
 import { useAudioEngine } from "@/hooks/useAudioEngine";
 import { EngineKind, pickTrackForPreset } from "@/lib/audio/audioEngine";
 import { AUDIO_PRESET_TRACKS } from "@/lib/audio/data/audioTracks";
-import { PRESET_TRACKS, type MusicTrackId } from "@/lib/audio/tracks";
+import { MusicState, PRESET_TRACKS, type MusicTrackId } from "@/lib/audio/tracks";
 import { CONFIG_PRESETS, TICK_MS_DEFAULT, type FullConfig } from "@/lib/gameConfig";
 import styles from "./GameCanvas.module.css";
 
@@ -652,12 +652,17 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
     window.localStorage.setItem(ENGINE_KIND_STORAGE_KEY, kind);
   }, []);
 
-  // Reflects "speed mode" (boosted) to the audio engine — audioFileEngine.ts
-  // fades condition-gated layers (e.g. the guitar stem) in/out in response;
-  // midiEngine.ts has no layers, so this is a no-op there.
+  // Dead takes priority over Boosted — a player who died while boosted
+  // still hears the Dead mix, not the Boosted one.
+  const musicState = gameOver ? MusicState.Dead : boosted ? MusicState.Boosted : MusicState.Idle;
+
+  // Reflects the player's adaptive-music state to the audio engine —
+  // audioFileEngine.ts fades each layer in/out based on its audibleIn list
+  // (e.g. the guitar stem only in Boosted); midiEngine.ts has no layers, so
+  // this is a no-op there.
   useEffect(() => {
-    audio.setBoosted(boosted);
-  }, [boosted, audio]);
+    audio.setMusicState(musicState);
+  }, [musicState, audio]);
 
   // Takes the preset index explicitly rather than reading `presetIndex`
   // state: switchLevel() below calls setPresetIndex(next) and startGame(...)

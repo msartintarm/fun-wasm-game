@@ -2,18 +2,28 @@ import type { ChordTimeline } from "../chordTimeline";
 
 export type MusicTrackId = string;
 
-// A runtime condition that gates whether a layer is audible. Only
-// consumed by audioFileEngine.ts (see setBoosted) — midiEngine.ts doesn't
-// support layers and never reads this.
-export enum LayerCondition {
+// The three adaptive-music mixes the game switches between, driven by the
+// player's current state (see GameCanvas.tsx's musicState derivation). Only
+// consumed by audioFileEngine.ts (see TrackLayer.audibleIn) — midiEngine.ts
+// doesn't support layers and never reads this.
+export enum MusicState {
+  // No power-up active — the sparsest mix (e.g. drums only).
+  Idle = "idle",
+  // Player is boosted ("speed mode") — the fullest mix, every instrument.
   Boosted = "boosted",
+  // Player has died — a stripped-back mix distinct from Idle (e.g. drums
+  // + bass, no lead/melody), rather than reusing the same mix as Idle.
+  Dead = "dead",
 }
 
 export interface TrackLayer {
   id: string;
   // Same relative-path convention as MusicTrack.assetPath below.
   assetPath: string;
-  condition: LayerCondition;
+  // Which MusicStates this stem is audible in — see
+  // audioFileEngine.ts's applyLayerVolumes. A stem audible in all three
+  // states is equivalent to always-on, same as the base track below.
+  audibleIn: MusicState[];
 }
 
 export interface MusicTrack {
@@ -23,11 +33,14 @@ export interface MusicTrack {
   // this app's public/ folder or, later, a CDN. Also format-agnostic on
   // purpose: today it points at a .mid file, but a future non-MIDI engine
   // implementation (see AGENTS-level note on the pending audio-file
-  // migration) reads the same field for its own asset format.
+  // migration) reads the same field for its own asset format. The base
+  // stem is always audible regardless of MusicState — e.g. the drums, the
+  // one instrument that never drops out — see `layers` for stems that come
+  // and go with the player's state.
   assetPath: string;
   timeline: ChordTimeline;
   // Additional stems played in sample-accurate sync with the base track,
-  // faded in/out based on `condition` — see audioFileEngine.ts. Optional
+  // faded in/out based on `audibleIn` — see audioFileEngine.ts. Optional
   // and MIDI-tracks never set it; undefined is the correct "no layers" state.
   layers?: TrackLayer[];
 }

@@ -7,9 +7,9 @@
 // a manual override in the TRACKS manifest below when it can't be found.
 // Tracks may declare additional `layers` — extra stems played in
 // sample-accurate sync with the base track by audioFileEngine.ts, faded
-// in/out based on game state (see data/tracks.ts's LayerCondition). Each
-// layer's source must be the exact same duration as the base track's, or
-// this script refuses to proceed rather than ship something that would
+// in/out based on the player's current MusicState (see data/tracks.ts).
+// Each layer's source must be the exact same duration as the base track's,
+// or this script refuses to proceed rather than ship something that would
 // audibly drift out of sync.
 // Run with: node scripts/process-audio-assets.mjs
 import { execFileSync } from "node:child_process";
@@ -34,15 +34,19 @@ const MAX_LAYER_DURATION_DRIFT_SECONDS = 0.05;
 const TRACKS = [
   {
     id: "sailing-to-hell",
-    // No-guitar mix — the guitar is its own layer below, mixed in only
-    // while the player is boosted ("speed mode").
-    sourceFile: "sailing-to-hell-no-guitar.wav",
+    // Drums-only — the one stem always audible regardless of MusicState.
+    // Bass and keys/guitar are separate layers below, mixed in only in
+    // the states their `audibleIn` list names (see data/audioTracks.ts).
+    sourceFile: "sailing-to-hell-drums.wav",
     // No ACID chunk or ID3 TBPM tag in this file (confirmed by hand
     // inspection this session) — REAPER's default WAV render doesn't
     // embed tempo. Re-export with "Add ACIDized WAV info" enabled to get
     // automatic detection working for future tracks.
     bpm: 120,
-    layers: [{ id: "guitar", sourceFile: "sailing-to-hell-guitar.wav" }],
+    layers: [
+      { id: "bass", sourceFile: "sailing-to-hell-bass.wav" },
+      { id: "keys-guitar", sourceFile: "sailing-to-hell-keys-guitar.wav" },
+    ],
   },
 ];
 

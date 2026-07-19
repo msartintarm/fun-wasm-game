@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo } from "react";
 import { AudioCommandType, getAudioEngine, type AudioCommand, type EngineKind } from "@/lib/audio/audioEngine";
-import type { MusicTrackId } from "@/lib/audio/tracks";
+import type { MusicState, MusicTrackId } from "@/lib/audio/tracks";
 
 export interface AudioController {
   armAutoplay: () => void;
@@ -13,7 +13,7 @@ export interface AudioController {
   setMusicVolume: (volume: number) => void;
   setEffectsMuted: (muted: boolean) => void;
   setEffectsVolume: (volume: number) => void;
-  setBoosted: (boosted: boolean) => void;
+  setMusicState: (state: MusicState) => void;
 }
 
 // Thin, stable wrapper over the AudioEngine singleton — GameCanvas depends
@@ -48,8 +48,8 @@ export function useAudioEngine(kind: EngineKind): AudioController {
     (volume: number) => dispatch({ type: AudioCommandType.SetEffectsVolume, volume }),
     [dispatch],
   );
-  const setBoosted = useCallback(
-    (boosted: boolean) => dispatch({ type: AudioCommandType.SetBoosted, boosted }),
+  const setMusicState = useCallback(
+    (state: MusicState) => dispatch({ type: AudioCommandType.SetMusicState, state }),
     [dispatch],
   );
 
@@ -74,8 +74,8 @@ export function useAudioEngine(kind: EngineKind): AudioController {
       setMusicVolume,
       setEffectsMuted,
       setEffectsVolume,
-      setBoosted,
+      setMusicState,
     }),
-    [armAutoplay, startTrack, stopTrack, triggerPickup, setMusicMuted, setMusicVolume, setEffectsMuted, setEffectsVolume, setBoosted],
+    [armAutoplay, startTrack, stopTrack, triggerPickup, setMusicMuted, setMusicVolume, setEffectsMuted, setEffectsVolume, setMusicState],
   );
 }

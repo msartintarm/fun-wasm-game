@@ -1,4 +1,4 @@
-import type { MusicTrackId } from "./tracks";
+import type { MusicState, MusicTrackId } from "./tracks";
 
 // Every side effect an engine can perform, as data. An engine is then just
 // a function that interprets commands — not an object of six methods.
@@ -23,7 +23,7 @@ export enum AudioCommandType {
   SetMusicVolume = "setMusicVolume",
   SetEffectsMuted = "setEffectsMuted",
   SetEffectsVolume = "setEffectsVolume",
-  SetBoosted = "setBoosted",
+  SetMusicState = "setMusicState",
 }
 
 export type AudioCommand =
@@ -35,11 +35,12 @@ export type AudioCommand =
   | { type: AudioCommandType.SetMusicVolume; volume: number }
   | { type: AudioCommandType.SetEffectsMuted; muted: boolean }
   | { type: AudioCommandType.SetEffectsVolume; volume: number }
-  // Reflects the player's current "speed mode" (boosted) state — only
-  // audioFileEngine.ts acts on it (fades condition-gated layers in/out);
-  // midiEngine.ts has no layers, so it's a no-op there. Still a required
-  // case in both engines' switches, via assertNever below.
-  | { type: AudioCommandType.SetBoosted; boosted: boolean };
+  // Reflects the player's current adaptive-music state (see MusicState:
+  // idle / boosted / dead) — only audioFileEngine.ts acts on it (fades
+  // layers in/out based on each one's audibleIn list); midiEngine.ts has
+  // no layers, so it's a no-op there. Still a required case in both
+  // engines' switches, via assertNever below.
+  | { type: AudioCommandType.SetMusicState; state: MusicState };
 
 export type AudioEngine = (command: AudioCommand) => void;
 

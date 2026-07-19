@@ -153,7 +153,7 @@ export function createEngine(): AudioEngine {
         return setEffectsMuted(command.muted);
       case AudioCommandType.SetEffectsVolume:
         return setEffectsVolume(command.volume);
-      case AudioCommandType.SetBoosted:
+      case AudioCommandType.SetMusicState:
         return; // no layers to fade — MIDI tracks don't support them
       default:
         return assertNever(command);

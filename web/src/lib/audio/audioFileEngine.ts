@@ -3,7 +3,7 @@ import * as Tone from "tone";
 import { audioAssetUrl } from "./assetUrl";
 import { activeChordAt } from "./chordTimeline";
 import { AUDIO_TRACKS } from "./data/audioTracks";
-import type { TrackLayer } from "./data/tracks";
+import { MusicState, type TrackLayer } from "./data/tracks";
 import { layerShouldBeAudible } from "./layerLogic";
 import { effectsBus, musicBus, setEffectsMuted, setEffectsVolume, setMusicMuted, setMusicVolume } from "./mixer";
 import { pickPickupNote } from "./noteSelection";
@@ -36,7 +36,7 @@ export function createEngine(): AudioEngine {
   let currentTrackId: MusicTrackId | undefined;
   let trackStartedAt = 0;
   let requestGeneration = 0;
-  let boosted = false;
+  let musicState: MusicState = MusicState.Idle;
 
   function stopCurrentPlayers() {
     currentBasePlayer?.dispose();
@@ -51,7 +51,7 @@ export function createEngine(): AudioEngine {
   // boosted-state transition).
   function applyLayerVolumes(rampSeconds: number) {
     for (const { layer, player } of currentLayers) {
-      const audible = layerShouldBeAudible(layer.condition, boosted);
+      const audible = layerShouldBeAudible(layer.audibleIn, musicState);
       const targetDb = audible ? 0 : -Infinity;
       if (rampSeconds > 0) {
         player.volume.rampTo(targetDb, rampSeconds);
@@ -156,9 +156,9 @@ export function createEngine(): AudioEngine {
     pickupSynth.triggerAttackRelease(freq, "8n");
   }
 
-  function setBoosted(nextBoosted: boolean) {
-    if (nextBoosted === boosted) return;
-    boosted = nextBoosted;
+  function setMusicState(nextState: MusicState) {
+    if (nextState === musicState) return;
+    musicState = nextState;
     applyLayerVolumes(LAYER_FADE_SECONDS);
   }
 
@@ -180,8 +180,8 @@ export function createEngine(): AudioEngine {
         return setEffectsMuted(command.muted);
       case AudioCommandType.SetEffectsVolume:
         return setEffectsVolume(command.volume);
-      case AudioCommandType.SetBoosted:
-        return setBoosted(command.boosted);
+      case AudioCommandType.SetMusicState:
+        return setMusicState(command.state);
       default:
         return assertNever(command);
     }
