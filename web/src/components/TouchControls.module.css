@@ -1,0 +1,55 @@
+@reference "tailwindcss";
+
+/* pointer:coarse (not a width breakpoint) gates visibility; .forceShow
+   overrides via specificity, no !important. `display` is set as its own
+   declaration rather than via @apply's grid/flex utilities (which also set
+   `display` and would silently win over an earlier plain `display: none`
+   in the same rule). */
+.dpad {
+  display: none;
+  @apply absolute bottom-4 left-1/2 -translate-x-1/2 grid-cols-3 grid-rows-3 gap-1.5;
+}
+.dpad.forceShow {
+  display: grid;
+}
+@media (pointer: coarse) {
+  .dpad {
+    display: grid;
+  }
+}
+
+/* Same visibility gating as .dpad above, laid out as a single row instead
+   of a cross — see TouchControlsScheme.Relative. */
+.row {
+  display: none;
+  @apply absolute bottom-4 left-1/2 -translate-x-1/2 flex-row gap-1.5;
+}
+.row.forceShow {
+  display: flex;
+}
+@media (pointer: coarse) {
+  .row {
+    display: flex;
+  }
+}
+
+.dpadButton {
+  @apply flex h-14 w-14 items-center justify-center rounded-full border border-zinc-600 bg-black/40 text-2xl text-zinc-100 select-none active:bg-white/20;
+}
+
+.up {
+  grid-column: 2;
+  grid-row: 1;
+}
+.left {
+  grid-column: 1;
+  grid-row: 2;
+}
+.right {
+  grid-column: 3;
+  grid-row: 2;
+}
+.down {
+  grid-column: 2;
+  grid-row: 3;
+}

@@ -54,6 +54,19 @@ fn ignores_direct_reversal_but_accepts_turns() {
 }
 
 #[test]
+fn current_heading_reflects_a_queued_turn_immediately_without_a_tick() {
+    let mut game = Game::with_seed(test_config(), 1);
+    let player = game.player_index().unwrap();
+    assert_eq!(game.snakes[player].current_heading(), Direction::Right);
+
+    game.set_player_direction(0); // Up — queued, not yet stepped
+    assert_eq!(game.snakes[player].current_heading(), Direction::Up);
+
+    game.set_player_direction(2); // Left — 90° from the queued Up, also legal
+    assert_eq!(game.snakes[player].current_heading(), Direction::Left);
+}
+
+#[test]
 fn buffers_a_quick_burst_of_turns_as_the_next_moves() {
     // Regression test for the exact scenario reported: rapidly pressing
     // up/left/down (each a 90° turn from the last) must not let the

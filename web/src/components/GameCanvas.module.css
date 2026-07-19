@@ -1,7 +1,10 @@
 @reference "tailwindcss";
 
 .wrapper {
-  @apply flex flex-col items-center gap-4;
+  /* Safe-area padding keeps content clear of a notch/home-indicator once
+     viewportFit:"cover" lets the page draw edge-to-edge on iOS. A no-op on
+     devices without a safe-area inset (env() falls back to 0). */
+  @apply flex flex-col items-center gap-4 pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)];
 }
 .scoreOverlay {
   @apply absolute top-3 right-3 flex flex-col items-end gap-1.5 rounded-lg bg-black/60 px-3 py-2 text-zinc-50;
@@ -22,10 +25,19 @@
   @apply rounded-full bg-zinc-800 px-4 py-1.5 font-medium text-zinc-100 hover:bg-zinc-700;
 }
 .canvasWrapper {
-  @apply relative;
+  @apply relative w-full;
 }
 .canvas {
-  @apply rounded-lg border border-zinc-700;
+  /* Tailwind's preflight only puts max-width:100%/height:auto on img/video,
+     not canvas — without this the canvas renders at its native 1280x960
+     backing-store size on every viewport, badly overflowing on mobile.
+     aspect-[4/3] mirrors CANVAS_W/CANVAS_H's exact ratio so the box holds
+     correct proportions even before the first frame paints. max-w keeps
+     today's desktop size unchanged (a no-op at >=1280px container width);
+     max-h uses dvh (accounts for iOS Safari's collapsing address bar,
+     unlike legacy vh) to leave room for the touch D-pad below it on short
+     mobile viewports. */
+  @apply w-full h-auto max-w-[1280px] max-h-[80dvh] aspect-[4/3] rounded-lg border border-zinc-700;
 }
 .loadingOverlay {
   @apply absolute inset-0 flex items-center justify-center rounded-lg bg-black/70 text-zinc-100;

@@ -17,6 +17,16 @@ impl Direction {
         }
     }
 
+    /// Inverse of `from_u8` — for exposing a snake's heading in GameState.
+    pub(crate) fn to_u8(self) -> u8 {
+        match self {
+            Direction::Up => 0,
+            Direction::Down => 1,
+            Direction::Left => 2,
+            Direction::Right => 3,
+        }
+    }
+
     pub(crate) fn opposite(self) -> Direction {
         match self {
             Direction::Up => Direction::Down,

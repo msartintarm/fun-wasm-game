@@ -396,11 +396,7 @@ impl Game {
     pub fn set_player_direction(&mut self, dir: u8) {
         if let Some(d) = Direction::from_u8(dir) {
             if let Some(player) = self.snakes.iter_mut().find(|s| s.is_player) {
-                let last = player
-                    .pending_directions
-                    .back()
-                    .copied()
-                    .unwrap_or(player.direction);
+                let last = player.current_heading();
                 // Skip repeats of the already-intended heading (e.g. key
                 // repeat while holding a direction) so they can't eat up
                 // buffer capacity that a later, different turn needs.
@@ -489,6 +485,7 @@ impl Game {
                 body: s.body.clone(),
                 alive: s.alive,
                 is_player: s.is_player,
+                direction: s.current_heading().to_u8(),
                 boosted: s.alive
                     && (self.is_near_others(i) || s.food_boost_remaining > 0 || self.is_at_edge(i)),
                 near_others: s.alive && self.is_near_others(i),

@@ -58,7 +58,7 @@ export default function ConfigPanel({ config, defaults, onApply }: ConfigPanelPr
         className={styles.toggleButton}
         aria-expanded={open}
       >
-        ⚙ Game settings {open ? "▲" : "▼"}
+        ⚙ Level settings {open ? "▲" : "▼"}
       </button>
       {open && (
         <form className={styles.panel} onSubmit={handleApply}>

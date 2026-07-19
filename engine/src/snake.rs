@@ -61,6 +61,9 @@ pub(crate) struct SnakeState {
     pub(crate) body: Vec<(i32, i32)>,
     pub(crate) alive: bool,
     pub(crate) is_player: bool,
+    /// See `Snake::current_heading` — includes any turn already queued but
+    /// not yet stepped.
+    pub(crate) direction: u8,
     pub(crate) boosted: bool,
     /// Specifically "within proximity_radius of another snake" — a subset
     /// of `boosted` (which also includes the food-triggered boost). Kept
@@ -99,6 +102,13 @@ pub(crate) struct Snake {
     /// Same pattern as `food_targeting`, for overall movement preference —
     /// see `AiBehavior`.
     pub(crate) ai_behavior: AiBehavior,
+}
+
+impl Snake {
+    /// Facing direction including any turn queued but not yet stepped.
+    pub(crate) fn current_heading(&self) -> Direction {
+        self.pending_directions.back().copied().unwrap_or(self.direction)
+    }
 }
 
 #[derive(Serialize)]

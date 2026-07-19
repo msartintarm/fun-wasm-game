@@ -2,11 +2,25 @@
 
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
 import ConfigPanel from "./ConfigPanel";
+import InputSettings from "./InputSettings";
+import TouchControls from "./TouchControls";
 import { useAudioEngine } from "@/hooks/useAudioEngine";
-import { EngineKind, pickTrackForPreset } from "@/lib/audio/audioEngine";
+import { useStoredState } from "@/hooks/useStoredState";
+import { EngineKind, getAudioEngine, pickTrackForPreset } from "@/lib/audio/audioEngine";
 import { AUDIO_PRESET_TRACKS } from "@/lib/audio/data/audioTracks";
 import { MusicState, PRESET_TRACKS, type MusicTrackId } from "@/lib/audio/tracks";
 import { CONFIG_PRESETS, TICK_MS_DEFAULT, type FullConfig } from "@/lib/gameConfig";
+import { RelativeTurn, resolveRelativeTurn } from "@/lib/relativeTurn";
+import {
+  parseTouchControlsMode,
+  parseTouchControlsScheme,
+  serializeTouchControlsMode,
+  serializeTouchControlsScheme,
+  TOUCH_CONTROLS_MODE_STORAGE_KEY,
+  TOUCH_CONTROLS_SCHEME_STORAGE_KEY,
+  TouchControlsMode,
+  TouchControlsScheme,
+} from "@/lib/touchControlsSettings";
 import styles from "./GameCanvas.module.css";
 
 const VIEWPORT_CELLS_W = 64;
@@ -114,6 +128,8 @@ interface SnakeState {
   body: Point[];
   alive: boolean;
   is_player: boolean;
+  // 0=Up, 1=Down, 2=Left, 3=Right — see engine::Snake::current_heading.
+  direction: number;
   boosted: boolean;
   near_others: boolean;
   death_cause: DeathCause | null;
@@ -154,6 +170,8 @@ interface SnakeDebugInfo {
   boosted: boolean;
   theme: ThemeName;
   color: string;
+  // 0=Up, 1=Down, 2=Left, 3=Right — see SnakeState.direction.
+  direction: number;
 }
 
 interface TestHooks {
@@ -182,6 +200,7 @@ function snakeDebugInfo(snakes: SnakeState[]): SnakeDebugInfo[] {
     boosted: s.boosted,
     theme: themeNameForAiNumber(nums[i]),
     color: colorFor(s, nums[i]),
+    direction: s.direction,
   }));
 }
 
@@ -544,62 +563,56 @@ const EFFECTS_VOLUME_STORAGE_KEY = "snake-effects-volume";
 const ENGINE_KIND_STORAGE_KEY = "snake-engine-kind";
 const DEFAULT_VOLUME = 0.8;
 
-function loadStoredMuted(key: string): boolean {
-  if (typeof window === "undefined") return false;
-  return window.localStorage.getItem(key) === "1";
+function parseMuted(raw: string | null): boolean {
+  return raw === "1";
 }
 
-function loadStoredVolume(key: string): number {
-  if (typeof window === "undefined") return DEFAULT_VOLUME;
-  const raw = window.localStorage.getItem(key);
+function serializeMuted(muted: boolean): string {
+  return muted ? "1" : "0";
+}
+
+function parseVolume(raw: string | null): number {
   if (raw === null) return DEFAULT_VOLUME;
   const stored = Number(raw);
   return Number.isFinite(stored) && stored >= 0 && stored <= 1 ? stored : DEFAULT_VOLUME;
 }
 
-// One mute+volume channel's state/persistence/handlers — used twice below
-// (music, effects), each wired to its own storage keys and its own pair of
-// audio-controller setters, so the two channels are genuinely independent.
+function serializeVolume(volume: number): string {
+  return String(volume);
+}
+
+// Used twice below (music, effects) with independent storage keys/setters.
 function useChannelControl(
   mutedKey: string,
   volumeKey: string,
   setEngineMuted: (muted: boolean) => void,
   setEngineVolume: (volume: number) => void,
 ) {
-  const [muted, setMutedState] = useState(() => loadStoredMuted(mutedKey));
-  const [volume, setVolumeState] = useState(() => loadStoredVolume(volumeKey));
+  const [muted, setMuted] = useStoredState(mutedKey, parseMuted, serializeMuted, false);
+  const [volume, setVolume] = useStoredState(volumeKey, parseVolume, serializeVolume, DEFAULT_VOLUME);
 
-  // Applies whatever was persisted from a previous visit — safe to call
-  // before the engine has actually loaded (see getAudioEngine's proxy).
   useEffect(() => {
     setEngineMuted(muted);
+  }, [muted, setEngineMuted]);
+  useEffect(() => {
     setEngineVolume(volume);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [volume, setEngineVolume]);
 
-  const toggleMuted = useCallback(() => {
-    const next = !muted;
-    setMutedState(next);
-    setEngineMuted(next);
-    window.localStorage.setItem(mutedKey, next ? "1" : "0");
-  }, [muted, setEngineMuted, mutedKey]);
-
+  const toggleMuted = useCallback(() => setMuted(!muted), [muted, setMuted]);
   const handleVolumeChange = useCallback(
-    (e: ChangeEvent<HTMLInputElement>) => {
-      const next = Number(e.target.value);
-      setVolumeState(next);
-      setEngineVolume(next);
-      window.localStorage.setItem(volumeKey, String(next));
-    },
-    [setEngineVolume, volumeKey],
+    (e: ChangeEvent<HTMLInputElement>) => setVolume(Number(e.target.value)),
+    [setVolume],
   );
 
   return { muted, volume, toggleMuted, handleVolumeChange };
 }
 
-function loadStoredEngineKind(): EngineKind {
-  if (typeof window === "undefined") return EngineKind.Midi;
-  return window.localStorage.getItem(ENGINE_KIND_STORAGE_KEY) === EngineKind.Audio ? EngineKind.Audio : EngineKind.Midi;
+function parseEngineKind(raw: string | null): EngineKind {
+  return raw === EngineKind.Audio ? EngineKind.Audio : EngineKind.Midi;
+}
+
+function serializeEngineKind(kind: EngineKind): string {
+  return kind;
 }
 
 export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
@@ -631,8 +644,33 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
   const [config, setConfig] = useState<FullConfig>(FALLBACK_CONFIG);
   const [defaults, setDefaults] = useState<FullConfig>(FALLBACK_CONFIG);
   const [presetIndex, setPresetIndex] = useState(0);
-  const [engineKind, setEngineKindState] = useState(loadStoredEngineKind);
+  const [engineKind, selectEngineKind] = useStoredState(
+    ENGINE_KIND_STORAGE_KEY,
+    parseEngineKind,
+    serializeEngineKind,
+    EngineKind.Midi,
+  );
+  const [touchControlsMode, selectTouchControlsMode] = useStoredState(
+    TOUCH_CONTROLS_MODE_STORAGE_KEY,
+    parseTouchControlsMode,
+    serializeTouchControlsMode,
+    TouchControlsMode.Auto,
+  );
+  const [touchControlsScheme, selectTouchControlsScheme] = useStoredState(
+    TOUCH_CONTROLS_SCHEME_STORAGE_KEY,
+    parseTouchControlsScheme,
+    serializeTouchControlsScheme,
+    TouchControlsScheme.Dpad,
+  );
   const audio = useAudioEngine(engineKind);
+
+  // Preloads the lazy engine module (see ENGINE_LOADERS) before Play is
+  // tapped — iOS Safari requires Tone.start() to run within the same
+  // synchronous task as the user gesture, which a still-in-flight import
+  // wouldn't allow.
+  useEffect(() => {
+    getAudioEngine(engineKind);
+  }, [engineKind]);
 
   const music = useChannelControl(
     MUSIC_MUTED_STORAGE_KEY,
@@ -646,11 +684,6 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
     audio.setEffectsMuted,
     audio.setEffectsVolume,
   );
-
-  const selectEngineKind = useCallback((kind: EngineKind) => {
-    setEngineKindState(kind);
-    window.localStorage.setItem(ENGINE_KIND_STORAGE_KEY, kind);
-  }, []);
 
   // Dead takes priority over Boosted — a player who died while boosted
   // still hears the Dead mix, not the Boosted one.
@@ -834,21 +867,48 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
     startGame(CONFIG_PRESETS[0].config, 0);
   }, [startGame, audio]);
 
+  // Shared by keyboard and both touch schemes. Refreshes currStateRef
+  // immediately (not just on the next tick) so handleRelativeTurn below
+  // sees an up-to-date direction for a same-frame double-tap.
+  const handleDirectionInput = useCallback(
+    (dir: number) => {
+      audio.armAutoplay();
+      if (gameOver) return;
+      const g = gameRef.current;
+      if (!g) return;
+      g.set_player_direction(dir);
+      currStateRef.current = g.state();
+    },
+    [gameOver, audio],
+  );
+
+  // See lib/relativeTurn.ts for why a U-turn is two calls, not one.
+  const handleRelativeTurn = useCallback(
+    (turn: RelativeTurn) => {
+      const playerSnake = currStateRef.current?.snakes.find((s) => s.is_player);
+      if (!playerSnake) return;
+      for (const dir of resolveRelativeTurn(turn, playerSnake.direction)) {
+        handleDirectionInput(dir);
+      }
+    },
+    [handleDirectionInput],
+  );
+
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       const dir = KEY_TO_DIR[e.key];
       if (dir === undefined) return;
-      audio.armAutoplay();
       e.preventDefault();
       if (gameOver) {
+        audio.armAutoplay();
         if (e.key === "r" || e.key === "R") startGame(config, presetIndex);
         return;
       }
-      gameRef.current?.set_player_direction(dir);
+      handleDirectionInput(dir);
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [gameOver, startGame, config, presetIndex, audio]);
+  }, [gameOver, startGame, config, presetIndex, audio, handleDirectionInput]);
 
   return (
     <div className={styles.wrapper}>
@@ -858,6 +918,12 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
           width={CANVAS_W}
           height={CANVAS_H}
           className={styles.canvas}
+        />
+        <TouchControls
+          mode={touchControlsMode}
+          scheme={touchControlsScheme}
+          onDirection={handleDirectionInput}
+          onRelativeTurn={handleRelativeTurn}
         />
         <div className={styles.scoreOverlay}>
           {!config.spectatorMode && (
@@ -976,6 +1042,12 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
           setStarted(true);
           startGame(cfg, presetIndex);
         }}
+      />
+      <InputSettings
+        touchControlsMode={touchControlsMode}
+        onTouchControlsModeChange={selectTouchControlsMode}
+        touchControlsScheme={touchControlsScheme}
+        onTouchControlsSchemeChange={selectTouchControlsScheme}
       />
     </div>
   );
