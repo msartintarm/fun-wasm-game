@@ -1,0 +1,44 @@
+@reference "tailwindcss";
+
+.wrapper {
+  @apply flex flex-col items-center gap-4;
+}
+.scoreOverlay {
+  @apply absolute top-3 right-3 flex flex-col items-end gap-1.5 rounded-lg bg-black/60 px-3 py-2 text-zinc-50;
+}
+.playerScoreRow {
+  @apply flex items-center gap-3 text-base font-medium;
+}
+.aiScoreList {
+  @apply flex flex-col items-end gap-0.5 border-t border-zinc-700 pt-1.5 text-xs text-zinc-300;
+}
+.boost {
+  @apply text-yellow-400;
+}
+.levelRow {
+  @apply flex items-center gap-3 text-sm text-zinc-400;
+}
+.switchLevelButton {
+  @apply rounded-full bg-zinc-800 px-4 py-1.5 font-medium text-zinc-100 hover:bg-zinc-700;
+}
+.canvasWrapper {
+  @apply relative;
+}
+.canvas {
+  @apply rounded-lg border border-zinc-700;
+}
+.loadingOverlay {
+  @apply absolute inset-0 flex items-center justify-center rounded-lg bg-black/70 text-zinc-100;
+}
+.gameOverOverlay {
+  @apply absolute inset-0 flex flex-col items-center justify-center gap-2 rounded-lg bg-black/70 text-zinc-100;
+}
+.gameOverTitle {
+  @apply text-2xl font-semibold;
+}
+.restartButton {
+  @apply mt-2 rounded-full bg-zinc-50 px-5 py-2 text-sm font-medium text-black hover:bg-zinc-200;
+}
+.description {
+  @apply max-w-md text-center text-sm text-zinc-400;
+}

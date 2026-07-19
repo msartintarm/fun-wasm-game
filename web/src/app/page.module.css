@@ -1,0 +1,8 @@
+@reference "tailwindcss";
+
+.main {
+  @apply flex flex-1 flex-col items-center justify-center gap-8 bg-zinc-950 px-4 py-16 font-sans;
+}
+.title {
+  @apply text-3xl font-semibold tracking-tight text-zinc-50;
+}

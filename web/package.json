@@ -11,7 +11,8 @@
     "start": "next start",
     "lint": "eslint",
     "test:e2e": "playwright test",
-    "test:e2e:install": "playwright install chromium"
+    "test:e2e:install": "playwright install chromium",
+    "dev:restart": "bash scripts/dev-restart.sh"
   },
   "dependencies": {
     "next": "16.2.10",

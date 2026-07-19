@@ -1,0 +1,87 @@
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Config {
+    pub width: i32,
+    pub height: i32,
+    pub num_ai: u32,
+    /// AI snakes always move at speed 1.0 (once per tick) as the reference
+    /// rate. The player's baseline speed is a fraction of that — "slightly
+    /// slower" by default.
+    pub player_speed: f64,
+    /// Multiplier applied to a snake's own current speed while boosted
+    /// (near another snake, or recently ate food). The player's boosted
+    /// speed is always hard-capped at the AI baseline (1.0) regardless of
+    /// this value, so the player is never faster than the AI.
+    pub boost_multiplier: f64,
+    pub proximity_radius: i32,
+    /// How many ticks a food-triggered speed boost lasts.
+    pub food_boost_ticks: u32,
+    pub food_score: u32,
+    pub boosted_food_score: u32,
+    pub min_food: u32,
+    /// Food-targeting strategy (see `FoodTargeting`) for exactly one
+    /// designated AI — the first AI spawned — so its behavior can be
+    /// compared against the rest, which always keep the original
+    /// distance-only targeting regardless of this setting.
+    pub food_targeting: FoodTargeting,
+}
+
+/// Strategy AI uses to pick a food target, selected via `Config`. Each
+/// variant maps to one pure targeting function (see `select_food_target`),
+/// so adding a new strategy is: add a variant, add a function, add a match
+/// arm — no existing behavior touched.
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FoodTargeting {
+    /// Always the closest food by distance, regardless of whether a path
+    /// there actually exists right now. This is the original behavior:
+    /// AI commits to food even when another snake is blocking the direct
+    /// route, which reads as bold/aggressive rather than indecisive.
+    Nearest,
+    /// The closest food that's actually reachable without crossing any
+    /// snake's body — food behind a blocking snake is treated as
+    /// unreachable and ignored until the way opens up.
+    NearestReachable,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            width: 60,
+            height: 40,
+            num_ai: 30,
+            player_speed: 1.0,
+            boost_multiplier: 1.6,
+            proximity_radius: 3,
+            food_boost_ticks: 20,
+            food_score: 10,
+            boosted_food_score: 25,
+            min_food: 18,
+            food_targeting: FoodTargeting::NearestReachable,
+        }
+    }
+}
+
+impl Config {
+    pub(crate) fn sanitized(self) -> Config {
+        let height = self.height.clamp(20, 300);
+        // Each snake (player + AI) needs its own starting lane; leave room
+        // for spawn_snake's `height - 2` usable rows so lanes never collide.
+        let max_ai = (height - 4).max(0) as u32;
+        Config {
+            width: self.width.clamp(20, 300),
+            height,
+            num_ai: self.num_ai.clamp(0, 64).min(max_ai),
+            player_speed: self.player_speed.clamp(0.1, 1.0),
+            boost_multiplier: self.boost_multiplier.clamp(1.0, 5.0),
+            proximity_radius: self.proximity_radius.clamp(1, 30),
+            food_boost_ticks: self.food_boost_ticks.clamp(0, 300),
+            food_score: self.food_score.clamp(1, 1000),
+            boosted_food_score: self.boosted_food_score.clamp(1, 1000),
+            min_food: self.min_food.clamp(1, 300),
+            food_targeting: self.food_targeting,
+        }
+    }
+}
