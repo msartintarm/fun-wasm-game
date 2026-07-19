@@ -115,7 +115,11 @@ impl Game {
                     death_cause: None,
                     score: 0,
                     food_targeting: FoodTargeting::Nearest,
-                    ai_behavior: AiBehavior::Default,
+                    ai_behavior: if self.config.all_ai_speed_seeking {
+                        AiBehavior::SpeedSeeking
+                    } else {
+                        AiBehavior::Default
+                    },
                 };
             }
         }
@@ -306,7 +310,11 @@ impl Game {
             } else {
                 FoodTargeting::Nearest
             };
-            let ai_behavior = if i == 0 { AiBehavior::SpeedSeeking } else { AiBehavior::Default };
+            let ai_behavior = if config.all_ai_speed_seeking || i == 0 {
+                AiBehavior::SpeedSeeking
+            } else {
+                AiBehavior::Default
+            };
             game.snakes.push(Game::spawn_snake(
                 config.width,
                 config.height,

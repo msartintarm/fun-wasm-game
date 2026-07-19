@@ -23,6 +23,7 @@ fn test_config() -> Config {
         wave_mode: false,
         vanquish_score_percent: 0,
         spectator_mode: false,
+        all_ai_speed_seeking: false,
     }
 }
 
@@ -461,6 +462,37 @@ fn only_the_first_ai_gets_the_speed_seeking_behavior() {
     );
     for &i in &ai_indices[1..] {
         assert_eq!(game.snakes[i].ai_behavior, AiBehavior::Default);
+    }
+}
+
+#[test]
+fn all_ai_speed_seeking_gives_every_ai_the_speed_seeking_behavior() {
+    let mut config = test_config();
+    config.num_ai = 4;
+    config.all_ai_speed_seeking = true;
+    let game = Game::with_seed(config, 1);
+
+    for snake in game.snakes.iter().filter(|s| !s.is_player) {
+        assert_eq!(snake.ai_behavior, AiBehavior::SpeedSeeking);
+    }
+}
+
+#[test]
+fn all_ai_speed_seeking_also_applies_to_wave_respawned_ai() {
+    let mut config = test_config();
+    config.num_ai = 2;
+    config.wave_mode = true;
+    config.all_ai_speed_seeking = true;
+    let mut game = Game::with_seed(config, 1);
+
+    for i in 0..game.snakes.len() {
+        game.snakes[i].alive = false;
+    }
+    game.tick();
+
+    assert!(game.snakes.len() > 2, "the wave should have respawned AI");
+    for snake in game.snakes.iter().filter(|s| !s.is_player && s.alive) {
+        assert_eq!(snake.ai_behavior, AiBehavior::SpeedSeeking);
     }
 }
 

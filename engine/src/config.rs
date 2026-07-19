@@ -36,6 +36,11 @@ pub struct Config {
     /// a spectator match just keeps running (wave_mode keeps it alive
     /// indefinitely rather than idling once every AI is dead).
     pub spectator_mode: bool,
+    /// Every AI (including ones spawned mid-match by wave escalation) gets
+    /// the `AiBehavior::SpeedSeeking` movement behavior normally reserved
+    /// for just the first AI spawned — a whole arena of the "advanced" AI
+    /// instead of one for comparison against the baseline.
+    pub all_ai_speed_seeking: bool,
 }
 
 /// Strategy AI uses to pick a food target, selected via `Config`. Each
@@ -73,6 +78,7 @@ impl Default for Config {
             wave_mode: false,
             vanquish_score_percent: 50,
             spectator_mode: false,
+            all_ai_speed_seeking: false,
         }
     }
 }
@@ -98,6 +104,7 @@ impl Config {
             wave_mode: self.wave_mode,
             vanquish_score_percent: self.vanquish_score_percent.clamp(0, 1000),
             spectator_mode: self.spectator_mode,
+            all_ai_speed_seeking: self.all_ai_speed_seeking,
         }
     }
 }

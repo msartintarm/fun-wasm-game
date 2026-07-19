@@ -98,6 +98,7 @@ const FALLBACK_CONFIG: FullConfig = {
   waveMode: false,
   vanquishScorePercent: 50,
   spectatorMode: false,
+  allAiSpeedSeeking: false,
   tickMs: TICK_MS_DEFAULT,
 };
 

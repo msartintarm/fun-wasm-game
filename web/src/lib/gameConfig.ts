@@ -17,10 +17,12 @@ export interface EngineConfig {
   boostedFoodScore: number;
   minFood: number;
   foodTargeting: FoodTargeting;
-  // See engine::Config::wave_mode / vanquish_score_percent / spectator_mode.
+  // See engine::Config::wave_mode / vanquish_score_percent / spectator_mode /
+  // all_ai_speed_seeking.
   waveMode: boolean;
   vanquishScorePercent: number;
   spectatorMode: boolean;
+  allAiSpeedSeeking: boolean;
 }
 
 export interface FullConfig extends EngineConfig {
@@ -101,6 +103,7 @@ export const CONFIG_PRESETS: ConfigPreset[] = [
       waveMode: true,
       vanquishScorePercent: 100,
       spectatorMode: false,
+      allAiSpeedSeeking: false,
     },
   },
   {
@@ -121,6 +124,7 @@ export const CONFIG_PRESETS: ConfigPreset[] = [
       waveMode: false,
       vanquishScorePercent: 50,
       spectatorMode: false,
+      allAiSpeedSeeking: false,
     },
   },
   {
@@ -141,6 +145,7 @@ export const CONFIG_PRESETS: ConfigPreset[] = [
       waveMode: false,
       vanquishScorePercent: 50,
       spectatorMode: false,
+      allAiSpeedSeeking: false,
     },
   },
   {
@@ -164,6 +169,33 @@ export const CONFIG_PRESETS: ConfigPreset[] = [
       waveMode: true,
       vanquishScorePercent: 50,
       spectatorMode: true,
+      allAiSpeedSeeking: false,
+    },
+  },
+  {
+    name: "Gladiator",
+    config: {
+      // Half of each dimension of the original 100x80 Spectator footprint —
+      // 1/4 the total area — a tight pit packing the same 20 AI into much
+      // less space for constant collisions.
+      width: 50,
+      height: 40,
+      numAi: 20,
+      tickMs: TICK_MS_DEFAULT,
+      playerSpeed: 1,
+      boostMultiplier: 1.6,
+      proximityRadius: 3,
+      foodBoostTicks: 20,
+      foodScore: 10,
+      boostedFoodScore: 25,
+      minFood: 18,
+      foodTargeting: "nearest_reachable",
+      waveMode: true,
+      vanquishScorePercent: 50,
+      spectatorMode: true,
+      // Every AI gets the same advanced speed-seeking movement behavior
+      // normally reserved for just the first AI spawned.
+      allAiSpeedSeeking: true,
     },
   },
 ];
