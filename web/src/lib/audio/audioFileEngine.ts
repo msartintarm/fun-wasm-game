@@ -4,7 +4,7 @@ import { audioAssetUrl } from "./assetUrl";
 import { activeChordAt } from "./chordTimeline";
 import { AUDIO_TRACKS } from "./data/audioTracks";
 import { MusicState, type TrackLayer } from "./data/tracks";
-import { layerShouldBeAudible } from "./layerLogic";
+import { layerTargetGain } from "./layerLogic";
 import { effectsBus, musicBus, setEffectsMuted, setEffectsVolume, setMusicMuted, setMusicVolume } from "./mixer";
 import { pickPickupNote } from "./noteSelection";
 import type { MusicTrackId } from "./tracks";
@@ -51,8 +51,9 @@ export function createEngine(): AudioEngine {
   // boosted-state transition).
   function applyLayerVolumes(rampSeconds: number) {
     for (const { layer, player } of currentLayers) {
-      const audible = layerShouldBeAudible(layer.audibleIn, musicState);
-      const targetDb = audible ? 0 : -Infinity;
+      // Tone.gainToDb(0) is -Infinity (silent) on its own — no separate
+      // "inaudible" branch needed.
+      const targetDb = Tone.gainToDb(layerTargetGain(layer.audibleIn, layer.relativeVolume, musicState));
       if (rampSeconds > 0) {
         player.volume.rampTo(targetDb, rampSeconds);
       } else {

@@ -24,6 +24,12 @@ export interface TrackLayer {
   // audioFileEngine.ts's applyLayerVolumes. A stem audible in all three
   // states is equivalent to always-on, same as the base track below.
   audibleIn: MusicState[];
+  // Linear gain (0-1) this layer plays at when audible, relative to the
+  // base track and other layers, which are always at unity (1). Undefined
+  // means unity too — only set this to deliberately mix a stem quieter
+  // than the rest (e.g. a lead instrument that reads as too loud relative
+  // to the rhythm section). See layerLogic.ts's layerTargetGain.
+  relativeVolume?: number;
 }
 
 export interface MusicTrack {

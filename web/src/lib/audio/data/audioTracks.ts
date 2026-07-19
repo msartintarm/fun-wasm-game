@@ -34,6 +34,9 @@ export const AUDIO_TRACKS: Record<MusicTrackId, MusicTrack> = {
         id: "keys-guitar",
         assetPath: "tracks/sailing-to-hell-keys-guitar.mp3",
         audibleIn: [MusicState.Boosted],
+        // Mixed 5% quieter than drums/bass — it read as too loud relative
+        // to the rhythm section at unity gain.
+        relativeVolume: 0.95,
       },
     ],
   },
