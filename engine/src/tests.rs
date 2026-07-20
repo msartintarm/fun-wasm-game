@@ -236,6 +236,73 @@ fn is_not_boosted_away_from_the_edge() {
 }
 
 #[test]
+fn boost_sources_stack_multiplicatively_not_flat() {
+    let mut config = test_config();
+    config.num_ai = 1;
+    let mut game = Game::with_seed(config, 1);
+    let player = game.player_index().unwrap();
+    let ai = 1 - player;
+
+    // Edge + proximity active simultaneously: player on the west edge,
+    // with the AI within proximity_radius of it.
+    game.snakes[player].body = vec![(0, 10), (1, 10), (2, 10), (3, 10)];
+    game.snakes[ai].body = vec![(0, 10 + config.proximity_radius)];
+
+    assert!(game.is_at_edge(player));
+    assert!(game.is_near_others(player));
+
+    let single_source = config.player_speed * config.boost_multiplier;
+    let two_sources_stacked = config.player_speed * config.boost_multiplier * config.boost_multiplier;
+    let actual = game.effective_speed(player);
+
+    assert!(
+        (actual - two_sources_stacked).abs() < 1e-9,
+        "expected two stacked sources to give {two_sources_stacked}, got {actual}"
+    );
+    assert!(
+        actual > single_source,
+        "stacked boost ({actual}) should exceed a single source ({single_source})"
+    );
+}
+
+#[test]
+fn all_three_boost_sources_stack_together() {
+    let mut config = test_config();
+    config.num_ai = 1;
+    let mut game = Game::with_seed(config, 1);
+    let player = game.player_index().unwrap();
+    let ai = 1 - player;
+
+    game.snakes[player].body = vec![(0, 10), (1, 10), (2, 10), (3, 10)]; // edge
+    game.snakes[ai].body = vec![(0, 10 + config.proximity_radius)]; // proximity
+    game.snakes[player].food_boost_remaining = config.food_boost_ticks; // food
+
+    let expected = config.player_speed * config.boost_multiplier.powi(3);
+    let actual = game.effective_speed(player);
+    assert!(
+        (actual - expected).abs() < 1e-9,
+        "expected all three sources stacked to give {expected}, got {actual}"
+    );
+    assert_eq!(game.boost_stack_count(player), 3);
+}
+
+#[test]
+fn boost_stack_count_reflects_exactly_the_active_sources() {
+    let mut config = test_config();
+    config.num_ai = 1;
+    let mut game = Game::with_seed(config, 1);
+    let player = game.player_index().unwrap();
+
+    assert_eq!(game.boost_stack_count(player), 0);
+
+    game.snakes[player].body = vec![(0, 10), (1, 10), (2, 10), (3, 10)]; // edge only
+    assert_eq!(game.boost_stack_count(player), 1);
+
+    game.snakes[player].food_boost_remaining = config.food_boost_ticks; // + food
+    assert_eq!(game.boost_stack_count(player), 2);
+}
+
+#[test]
 fn dies_on_wall_collision_and_freezes_state() {
     let mut config = test_config();
     config.width = 6;

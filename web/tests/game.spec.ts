@@ -76,6 +76,18 @@ test("shows game over on wall collision and restarts", async ({ page }) => {
   await expect(page.getByText("Score: 0")).toBeVisible();
 });
 
+test("restarts via the 'r' key, not just the Restart button", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByText("Loading engine…")).toBeHidden({ timeout: 15_000 });
+  await page.getByRole("button", { name: "Play" }).click();
+
+  await expect(page.getByText("Game Over")).toBeVisible({ timeout: 30_000 });
+
+  await page.keyboard.press("r");
+  await expect(page.getByText("Game Over")).toBeHidden();
+  await expect(page.getByText("Score: 0")).toBeVisible();
+});
+
 // Per-snake render state (emoji theme, boosted, color) only exists inside
 // canvas draw calls, which nothing in Playwright can inspect directly — so
 // GameCanvas exposes it via window.__testHooks (see isE2EDebug in

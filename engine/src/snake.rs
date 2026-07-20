@@ -70,6 +70,10 @@ pub(crate) struct SnakeState {
     /// separate so the frontend can react differently to "close to another
     /// snake" vs. "sped up from eating."
     pub(crate) near_others: bool,
+    /// How many of the three boost sources (proximity, food, edge) are
+    /// active right now, 0-3 — see `Game::effective_speed`, which stacks
+    /// `boost_multiplier` once per active source.
+    pub(crate) boost_stack_count: u32,
     pub(crate) death_cause: Option<DeathCause>,
     pub(crate) score: u32,
 }

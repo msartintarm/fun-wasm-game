@@ -10,10 +10,11 @@ pub struct Config {
     /// rate. The player's baseline speed is a fraction of that — "slightly
     /// slower" by default.
     pub player_speed: f64,
-    /// Multiplier applied to a snake's own current speed while boosted
-    /// (near another snake, or recently ate food). The player's boosted
-    /// speed is always hard-capped at the AI baseline (1.0) regardless of
-    /// this value, so the player is never faster than the AI.
+    /// Multiplier applied once per active boost source (near another
+    /// snake, recently ate food, at the arena edge) — see
+    /// `Game::effective_speed`. These stack multiplicatively, so a snake
+    /// hitting two or three sources at once compounds past what any single
+    /// source gives alone.
     pub boost_multiplier: f64,
     pub proximity_radius: i32,
     /// How many ticks a food-triggered speed boost lasts.
@@ -68,9 +69,9 @@ impl Default for Config {
             height: 40,
             num_ai: 30,
             player_speed: 1.0,
-            boost_multiplier: 1.6,
+            boost_multiplier: 1.3,
             proximity_radius: 3,
-            food_boost_ticks: 20,
+            food_boost_ticks: 40,
             food_score: 10,
             boosted_food_score: 25,
             min_food: 18,

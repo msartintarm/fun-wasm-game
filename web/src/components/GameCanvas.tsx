@@ -102,9 +102,9 @@ const FALLBACK_CONFIG: FullConfig = {
   height: 40,
   numAi: 30,
   playerSpeed: 1,
-  boostMultiplier: 1.6,
+  boostMultiplier: 1.3,
   proximityRadius: 3,
-  foodBoostTicks: 20,
+  foodBoostTicks: 40,
   foodScore: 10,
   boostedFoodScore: 25,
   minFood: 18,
@@ -132,6 +132,10 @@ interface SnakeState {
   direction: number;
   boosted: boolean;
   near_others: boolean;
+  // 0-3 — how many of proximity/food/edge are active right now. See
+  // engine::Game::effective_speed, which stacks boost_multiplier once per
+  // active source.
+  boost_stack_count: number;
   death_cause: DeathCause | null;
   score: number;
 }
@@ -356,24 +360,25 @@ function interpolatedBody(
       return [lerp(px, x, t), lerp(py, y, t)] as Point;
     });
   }
-  if (grew === 1) {
+  if (grew >= 1) {
     // The engine grows by inserting a new head and skipping the tail pop,
-    // so every existing segment keeps its exact position (just shifted one
-    // index down) — only the new head segment actually needs to animate,
-    // sliding out from where the old head was. Without this, a length
-    // change fell back to snapping the whole body, which read as the
-    // growth popping in at the head instead of the head smoothly extending
-    // while the tail holds still.
+    // so every pre-existing segment keeps its exact position, just shifted
+    // `grew` slots deeper into the array — only the newly grown head-ward
+    // segment(s) actually need to animate, sliding out from where the old
+    // head was. Stacked boosts can push a snake through 2+ steps (and so
+    // 2+ eats) in a single external tick, not just 1 — this used to fall
+    // back to snapping the whole body on every multi-eat tick, which read
+    // as visible jerkiness once stacking made that the common case rather
+    // than a rare one.
     return snake.body.map(([x, y], j) => {
-      if (j === 0) {
+      if (j < grew) {
         const [px, py] = prevSnake.body[0];
         return [lerp(px, x, t), lerp(py, y, t)] as Point;
       }
       return [x, y] as Point;
     });
   }
-  // Rare (e.g. a heavily boosted snake eating twice in one tick) or a
-  // shrink, which shouldn't happen — snap rather than guess.
+  // A shrink, which shouldn't happen — snap rather than guess.
   return snake.body;
 }
 
@@ -621,6 +626,8 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
   const moduleRef = useRef<EngineModule | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const rafRef = useRef<number>(0);
+  const fpsFrameCountRef = useRef(0);
+  const fpsWindowStartRef = useRef(0);
   const prevStateRef = useRef<GameStateJson | null>(null);
   const currStateRef = useRef<GameStateJson | null>(null);
   const lastTickTimeRef = useRef<number>(0);
@@ -639,7 +646,8 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
   const [gameOver, setGameOver] = useState(false);
   const [loading, setLoading] = useState(true);
   const [started, setStarted] = useState(false);
-  const [boosted, setBoosted] = useState(false);
+  const [boostStackCount, setBoostStackCount] = useState(0);
+  const [fps, setFps] = useState(0);
   const [aiScores, setAiScores] = useState<AiScoreEntry[]>([]);
   const [config, setConfig] = useState<FullConfig>(FALLBACK_CONFIG);
   const [defaults, setDefaults] = useState<FullConfig>(FALLBACK_CONFIG);
@@ -687,7 +695,7 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
 
   // Dead takes priority over Boosted — a player who died while boosted
   // still hears the Dead mix, not the Boosted one.
-  const musicState = gameOver ? MusicState.Dead : boosted ? MusicState.Boosted : MusicState.Idle;
+  const musicState = gameOver ? MusicState.Dead : boostStackCount > 0 ? MusicState.Boosted : MusicState.Idle;
 
   // Reflects the player's adaptive-music state to the audio engine —
   // audioFileEngine.ts fades each layer in/out based on its audibleIn list
@@ -733,7 +741,7 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
     setConfig(cfg);
     setScore(0);
     setGameOver(false);
-    setBoosted(false);
+    setBoostStackCount(0);
     setAiScores(topAiScores(initial.snakes));
     if (e2eDebug) window.__testHooks = { snakes: snakeDebugInfo(initial.snakes), wave: initial.wave };
 
@@ -767,7 +775,7 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
       currStateRef.current = nextState;
       lastTickTimeRef.current = now;
       setScore(g.score());
-      setBoosted(nextState.snakes.find((s) => s.is_player)?.boosted ?? false);
+      setBoostStackCount(nextState.snakes.find((s) => s.is_player)?.boost_stack_count ?? 0);
       setAiScores(topAiScores(nextState.snakes));
       if (e2eDebug) window.__testHooks = { snakes: snakeDebugInfo(nextState.snakes), wave: nextState.wave };
 
@@ -780,6 +788,14 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
     }, cfg.tickMs);
 
     function frame() {
+      const now0 = performance.now();
+      fpsFrameCountRef.current += 1;
+      if (now0 - fpsWindowStartRef.current >= 1000) {
+        setFps(fpsFrameCountRef.current);
+        fpsFrameCountRef.current = 0;
+        fpsWindowStartRef.current = now0;
+      }
+
       const g = gameRef.current;
       if (g && !g.is_game_over()) {
         const { dirs, next } = pollGamepadDirections(gamepadStateRef.current);
@@ -808,6 +824,8 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
       }
       rafRef.current = requestAnimationFrame(frame);
     }
+    fpsFrameCountRef.current = 0;
+    fpsWindowStartRef.current = performance.now();
     rafRef.current = requestAnimationFrame(frame);
   }, [e2eDebug, audio, engineKind]);
 
@@ -897,14 +915,18 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
+      if (gameOver) {
+        // "r"/"R" isn't in KEY_TO_DIR, so this must be checked before (not
+        // after) the dir-lookup bailout below, or it's unreachable.
+        if (e.key === "r" || e.key === "R") {
+          audio.armAutoplay();
+          startGame(config, presetIndex);
+        }
+        return;
+      }
       const dir = KEY_TO_DIR[e.key];
       if (dir === undefined) return;
       e.preventDefault();
-      if (gameOver) {
-        audio.armAutoplay();
-        if (e.key === "r" || e.key === "R") startGame(config, presetIndex);
-        return;
-      }
       handleDirectionInput(dir);
     }
     window.addEventListener("keydown", onKeyDown);
@@ -926,11 +948,15 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
           onDirection={handleDirectionInput}
           onRelativeTurn={handleRelativeTurn}
         />
+        {boostStackCount > 0 && !gameOver && (
+          <div className={styles.boostIndicator}>
+            ⚡ Boost{boostStackCount > 1 ? ` x${boostStackCount}` : "!"}
+          </div>
+        )}
         <div className={styles.scoreOverlay}>
           {!config.spectatorMode && (
             <div className={styles.playerScoreRow}>
               <span>Score: {score}</span>
-              {boosted && !gameOver && <span className={styles.boost}>⚡ Boost!</span>}
             </div>
           )}
           {aiScores.length > 0 && (
@@ -942,6 +968,7 @@ export default function GameCanvas({ e2eDebug }: GameCanvasProps) {
               ))}
             </ul>
           )}
+          <span className={styles.fps}>{fps} fps</span>
         </div>
         {loading && <div className={styles.loadingOverlay}>Loading engine…</div>}
         {!loading && !started && (

@@ -255,15 +255,25 @@ impl Game {
         self.is_edge_cell(self.snakes[index].body[0])
     }
 
+    /// How many of the three boost sources (proximity, food, edge) are
+    /// active for this snake right now, 0-3.
+    pub(crate) fn boost_stack_count(&self, index: usize) -> u32 {
+        let snake = &self.snakes[index];
+        self.is_near_others(index) as u32
+            + (snake.food_boost_remaining > 0) as u32
+            + self.is_at_edge(index) as u32
+    }
+
     /// Ticks moved per external tick for this snake, accounting for boosts.
     /// AI baseline is always 1.0; the player's baseline is `player_speed`
-    /// (<= 1.0).
+    /// (<= 1.0). The three boost sources stack — `boost_multiplier` is
+    /// applied once per active source rather than once total, so being
+    /// near another snake while also food-boosted compounds instead of
+    /// being capped at a single flat multiplier.
     pub(crate) fn effective_speed(&self, index: usize) -> f64 {
         let snake = &self.snakes[index];
         let base = if snake.is_player { self.config.player_speed } else { 1.0 };
-        let boosted =
-            self.is_near_others(index) || snake.food_boost_remaining > 0 || self.is_at_edge(index);
-        if boosted { base * self.config.boost_multiplier } else { base }
+        base * self.config.boost_multiplier.powi(self.boost_stack_count(index) as i32)
     }
 
     pub(crate) fn player_index(&self) -> Option<usize> {
@@ -489,6 +499,7 @@ impl Game {
                 boosted: s.alive
                     && (self.is_near_others(i) || s.food_boost_remaining > 0 || self.is_at_edge(i)),
                 near_others: s.alive && self.is_near_others(i),
+                boost_stack_count: if s.alive { self.boost_stack_count(i) } else { 0 },
                 death_cause: s.death_cause,
                 score: s.score,
             })

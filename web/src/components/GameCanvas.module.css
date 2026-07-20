@@ -15,8 +15,11 @@
 .aiScoreList {
   @apply flex flex-col items-end gap-0.5 border-t border-zinc-700 pt-1.5 text-xs text-zinc-300;
 }
-.boost {
-  @apply text-yellow-400;
+.fps {
+  @apply text-xs text-zinc-500;
+}
+.boostIndicator {
+  @apply absolute top-3 left-1/2 -translate-x-1/2 rounded-lg bg-black/60 px-3 py-1.5 text-base font-medium text-yellow-400;
 }
 .levelRow {
   @apply flex items-center gap-3 text-sm text-zinc-400;
