@@ -1,5 +1,7 @@
 # snake
 
+[msartintarm.github.io/snake](https://msartintarm.github.io/snake)
+
 Multiplayer Snake: a human-controlled snake plus several AI snakes, rendered
 in a Next.js app via a Rust game engine compiled to WebAssembly.
 
